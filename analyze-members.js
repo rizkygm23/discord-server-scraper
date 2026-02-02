@@ -1,4 +1,5 @@
 const MemberAnalytics = require('./analytics');
+const { saveToSupabase } = require('./supabase');
 require('dotenv').config();
 
 /**
@@ -27,7 +28,7 @@ const CHANNEL_CATEGORIES = {
 const INCLUDE_ALL_CHANNELS = true;
 
 // Berapa banyak pesan yang ingin diambil per channel (max)
-const MESSAGE_LIMIT = 10000;
+const MESSAGE_LIMIT = 1000000;
 
 /**
  * Main function
@@ -89,9 +90,16 @@ async function main() {
         const activityData = await analytics.analyzeActivity(channelsToAnalyze, MESSAGE_LIMIT);
         console.log('');
 
-        // Step 5: Save results
-        console.log('💾 Saving results...');
+        // Step 5: Save results to files
+        console.log('💾 Saving results to files...');
         await analytics.saveResults(activityData);
+
+        // Step 6: Save to Supabase
+        console.log('\n☁️ Saving to Supabase...');
+        const dbResult = await saveToSupabase(activityData);
+        if (!dbResult.skipped) {
+            console.log(`   Database: ${dbResult.success} saved, ${dbResult.errors} errors`);
+        }
 
         // Step 6: Show quick summary
         console.log('\n');

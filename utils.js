@@ -3,7 +3,6 @@ const path = require('path');
 const axios = require('axios');
 const { URL } = require('url');
 const { File, Storage } = require('megajs');
-const fileType = require('file-type');
 
 async function ensureDir(dir) {
   await fs.ensureDir(dir);
