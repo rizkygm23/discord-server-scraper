@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "channels": "node get-all-channels.js",
+    "analyze": "node analyze-members.js",
     "help": "node index.js --help",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

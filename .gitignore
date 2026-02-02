@@ -18,6 +18,7 @@ discord_token.txt
 output/
 downloads/
 data/
+analytics/
 
 # Log files
 *.log
