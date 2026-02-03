@@ -49,10 +49,13 @@ async function saveToSupabase(activityData) {
         connected_accounts: member.connectedAccounts || [],
         tweet: member.activity?.tweet || 0,
         art: member.activity?.art || 0,
-        other: member.activity?.other || 0,
         total_messages: member.totalMessages || 0,
         first_message_date: member.firstMessageDate || null,
         last_message_date: member.lastMessageDate || null,
+        // Role Snapshots & Promotion
+        role_kamis: member.roleKamis || undefined, // undefined means do not touch existing value if not provided
+        role_sabtu: member.roleSabtu || undefined,
+        is_promoted: member.isPromoted || undefined
     }));
 
     // Process in batches
