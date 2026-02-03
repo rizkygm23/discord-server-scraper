@@ -2,6 +2,19 @@ const MemberAnalytics = require('./analytics');
 const { saveToSupabase, getMembersFromSupabase } = require('./supabase');
 const config = require('./config');
 
+// Hardcoded Channel Configuration (copied from analyze-members.js)
+const CHANNEL_CATEGORIES = {
+    // Channel untuk post tweet/twitter
+    "tweet": [
+        "1347351535071400047",  // Tweet channel
+    ],
+
+    // Channel untuk art submissions  
+    "art": [
+        "1349784473956257914",  // Art channel
+    ]
+};
+
 // Helper to extract highest magnitude from role list
 function getHighestMagnitude(roles) {
     let maxMag = 0.0;
@@ -37,7 +50,7 @@ function getTimeUntilNextRun() {
 async function runAnalysis() {
     console.log(`\n🚀 Starting Scheduled Analysis at ${new Date().toISOString()}`);
 
-    const analytics = new MemberAnalytics(config.channelCategories);
+    const analytics = new MemberAnalytics(CHANNEL_CATEGORIES);
 
     try {
         await analytics.initialize();
@@ -46,11 +59,11 @@ async function runAnalysis() {
         const members = await analytics.getAllMembers();
 
         // 2. Refresh channel lists based on category
-        // NOTE: This assumes config.channelCategories contains IDs or names
+        // NOTE: This assumes CHANNEL_CATEGORIES contains IDs or names
         // Ideally we resolve them to actual IDs if they aren't already
 
         // 3. Analyze Activity
-        const activityData = await analytics.analyzeActivity(config.channelCategories);
+        const activityData = await analytics.analyzeActivity(CHANNEL_CATEGORIES);
 
         // 4. Apply Day-Specific Logic (Thursday/Saturday)
         // Check current day in UTC
