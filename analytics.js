@@ -154,65 +154,84 @@ class MemberAnalytics {
 
     /**
      * Get all members from the server with their roles and extended info
-     * Uses chunked fetching for large servers to avoid timeout
+     * For large servers (50k+), skips full fetch and relies on per-message fetching
      */
     async getAllMembers() {
-        console.log('👥 Fetching all server members...');
+        console.log('👥 Preparing member data...');
 
         const guild = await this.client.guilds.fetch(config.serverId);
         if (!guild) {
             throw new Error(`Server ID ${config.serverId} not found`);
         }
 
+        this.guild = guild; // Store for later use
         const expectedCount = guild.memberCount;
         console.log(`   Server: ${guild.name}`);
-        console.log(`   Expected: ~${expectedCount.toLocaleString()} members`);
+        console.log(`   Total Members: ~${expectedCount.toLocaleString()}`);
         console.log('');
 
-        // Start loading animation
+        // For very large servers, skip full fetch - it will timeout
+        const LARGE_SERVER_THRESHOLD = 50000;
+
+        if (expectedCount > LARGE_SERVER_THRESHOLD) {
+            console.log(`   ⚡ Large server detected (${expectedCount.toLocaleString()} members)`);
+            console.log(`   📋 Using on-demand fetching (faster & more reliable)`);
+            console.log(`   ℹ️  Members will be fetched when processing messages\n`);
+
+            // Just use whatever is in cache
+            const cachedMembers = guild.members.cache;
+            console.log(`   Cache has ${cachedMembers.size.toLocaleString()} members pre-loaded`);
+
+            // Store cached members
+            cachedMembers.forEach(member => {
+                const roles = member.roles.cache
+                    .filter(role => role.name !== '@everyone')
+                    .map(role => ({
+                        id: role.id,
+                        name: role.name,
+                        color: role.hexColor
+                    }));
+
+                const memberData = {
+                    id: member.user.id,
+                    username: member.user.username,
+                    displayName: member.displayName,
+                    discriminator: member.user.discriminator,
+                    avatar: member.user.avatarURL({ dynamic: true, size: 512 }),
+                    accentColor: member.user.accentColor || null,
+                    roles: roles,
+                    roleNames: roles.map(r => r.name),
+                    joinedAt: member.joinedAt,
+                    createdAt: member.user.createdAt,
+                    isBot: member.user.bot,
+                    customStatus: null,
+                    connectedAccounts: []
+                };
+                this.members.set(member.user.id, memberData);
+            });
+
+            return Array.from(this.members.values());
+        }
+
+        // For smaller servers, do normal fetch
         progress.reset();
         let animationInterval;
-        let fetchedSoFar = 0;
+        let dotCount = 0;
 
         animationInterval = setInterval(() => {
             const spinner = progress.getSpinner();
             const elapsed = progress.formatTime(Date.now() - progress.startTime);
-            const pct = expectedCount > 0 ? Math.round((fetchedSoFar / expectedCount) * 100) : 0;
-            progress.update(`   ${spinner} Fetching: ${fetchedSoFar.toLocaleString()} / ${expectedCount.toLocaleString()} (${pct}%) | ${elapsed}`);
+            const dots = '.'.repeat((dotCount % 3) + 1).padEnd(3);
+            dotCount++;
+            progress.update(`   ${spinner} Fetching members${dots} (${elapsed})`);
         }, 150);
 
         try {
-            // For large servers, use chunking with timeout option
-            // First, try to use what's in cache
-            let members = guild.members.cache;
+            const members = await guild.members.fetch({ force: true });
 
-            // If cache is small, fetch properly
-            if (members.size < expectedCount * 0.5) {
-                console.log(`   Cache has ${members.size.toLocaleString()} members, fetching more...`);
-
-                // Use the fetch with query to get members in batches
-                // This approach works better for large servers
-                try {
-                    members = await guild.members.fetch({
-                        force: true,
-                        time: 120000  // 2 minute timeout
-                    });
-                    fetchedSoFar = members.size;
-                } catch (fetchError) {
-                    if (fetchError.message.includes('TIMEOUT') || fetchError.message.includes('time')) {
-                        console.log(`\n   ⚠️ Full fetch timed out, using partial data...`);
-                        members = guild.members.cache;
-                    } else {
-                        throw fetchError;
-                    }
-                }
-            }
-
-            fetchedSoFar = members.size;
             clearInterval(animationInterval);
             const elapsed = progress.formatTime(Date.now() - progress.startTime);
-            const coverage = expectedCount > 0 ? Math.round((members.size / expectedCount) * 100) : 100;
-            progress.finish(`   ✅ Fetched ${members.size.toLocaleString()} members (${coverage}% coverage) | Time: ${elapsed}`);
+            progress.finish(`   ✅ Fetched ${members.size.toLocaleString()} members | Time: ${elapsed}`);
 
             const memberList = [];
 
