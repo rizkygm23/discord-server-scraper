@@ -154,78 +154,122 @@ class MemberAnalytics {
 
     /**
      * Get all members from the server with their roles and extended info
+     * Uses chunked fetching for large servers to avoid timeout
      */
     async getAllMembers() {
-        console.log('Fetching all server members...');
+        console.log('👥 Fetching all server members...');
 
         const guild = await this.client.guilds.fetch(config.serverId);
         if (!guild) {
             throw new Error(`Server ID ${config.serverId} not found`);
         }
 
-        // Fetch all members with chunking for large servers
-        console.log(`Server: ${guild.name} (${guild.memberCount} members)`);
-        console.log('Fetching members (this may take a while for large servers)...');
+        const expectedCount = guild.memberCount;
+        console.log(`   Server: ${guild.name}`);
+        console.log(`   Expected: ~${expectedCount.toLocaleString()} members`);
+        console.log('');
 
-        // For large servers, we need to ensure all members are fetched
-        // Using force: true to bypass cache
-        const members = await guild.members.fetch({ force: true });
+        // Start loading animation
+        progress.reset();
+        let animationInterval;
+        let fetchedSoFar = 0;
 
-        console.log(`Fetched ${members.size} members from API`);
+        animationInterval = setInterval(() => {
+            const spinner = progress.getSpinner();
+            const elapsed = progress.formatTime(Date.now() - progress.startTime);
+            const pct = expectedCount > 0 ? Math.round((fetchedSoFar / expectedCount) * 100) : 0;
+            progress.update(`   ${spinner} Fetching: ${fetchedSoFar.toLocaleString()} / ${expectedCount.toLocaleString()} (${pct}%) | ${elapsed}`);
+        }, 150);
 
-        const memberList = [];
+        try {
+            // For large servers, use chunking with timeout option
+            // First, try to use what's in cache
+            let members = guild.members.cache;
 
-        members.forEach(member => {
-            const roles = member.roles.cache
-                .filter(role => role.name !== '@everyone')
-                .map(role => ({
-                    id: role.id,
-                    name: role.name,
-                    color: role.hexColor
-                }));
+            // If cache is small, fetch properly
+            if (members.size < expectedCount * 0.5) {
+                console.log(`   Cache has ${members.size.toLocaleString()} members, fetching more...`);
 
-            // Get custom status from presence activities
-            let customStatus = null;
-            if (member.presence && member.presence.activities) {
-                const customActivity = member.presence.activities.find(
-                    a => a.type === 4 || a.type === 'CUSTOM'
-                );
-                if (customActivity) {
-                    customStatus = customActivity.state || customActivity.name;
+                // Use the fetch with query to get members in batches
+                // This approach works better for large servers
+                try {
+                    members = await guild.members.fetch({
+                        force: true,
+                        time: 120000  // 2 minute timeout
+                    });
+                    fetchedSoFar = members.size;
+                } catch (fetchError) {
+                    if (fetchError.message.includes('TIMEOUT') || fetchError.message.includes('time')) {
+                        console.log(`\n   ⚠️ Full fetch timed out, using partial data...`);
+                        members = guild.members.cache;
+                    } else {
+                        throw fetchError;
+                    }
                 }
             }
 
-            // Get connected accounts (if available through profile)
-            // Note: Connected accounts require fetching user profile which may not always be available
-            let connectedAccounts = [];
+            fetchedSoFar = members.size;
+            clearInterval(animationInterval);
+            const elapsed = progress.formatTime(Date.now() - progress.startTime);
+            const coverage = expectedCount > 0 ? Math.round((members.size / expectedCount) * 100) : 100;
+            progress.finish(`   ✅ Fetched ${members.size.toLocaleString()} members (${coverage}% coverage) | Time: ${elapsed}`);
 
-            const memberData = {
-                id: member.user.id,
-                username: member.user.username,
-                displayName: member.displayName,
-                discriminator: member.user.discriminator,
-                avatar: member.user.avatarURL({ dynamic: true, size: 512 }),
-                accentColor: member.user.accentColor || null,
-                roles: roles,
-                roleNames: roles.map(r => r.name),
-                joinedAt: member.joinedAt,
-                createdAt: member.user.createdAt,  // Account creation date
-                isBot: member.user.bot,
-                customStatus: customStatus,
-                connectedAccounts: connectedAccounts
-            };
+            const memberList = [];
 
-            memberList.push(memberData);
-            this.members.set(member.user.id, memberData);
-        });
+            members.forEach(member => {
+                const roles = member.roles.cache
+                    .filter(role => role.name !== '@everyone')
+                    .map(role => ({
+                        id: role.id,
+                        name: role.name,
+                        color: role.hexColor
+                    }));
 
-        console.log(`Fetched ${memberList.length} members`);
+                // Get custom status from presence activities
+                let customStatus = null;
+                if (member.presence && member.presence.activities) {
+                    const customActivity = member.presence.activities.find(
+                        a => a.type === 4 || a.type === 'CUSTOM'
+                    );
+                    if (customActivity) {
+                        customStatus = customActivity.state || customActivity.name;
+                    }
+                }
 
-        // Filter out bots
-        const humanMembers = memberList.filter(m => !m.isBot);
-        console.log(`Human members: ${humanMembers.length}`);
+                // Get connected accounts (if available through profile)
+                // Note: Connected accounts require fetching user profile which may not always be available
+                let connectedAccounts = [];
 
-        return memberList;
+                const memberData = {
+                    id: member.user.id,
+                    username: member.user.username,
+                    displayName: member.displayName,
+                    discriminator: member.user.discriminator,
+                    avatar: member.user.avatarURL({ dynamic: true, size: 512 }),
+                    accentColor: member.user.accentColor || null,
+                    roles: roles,
+                    roleNames: roles.map(r => r.name),
+                    joinedAt: member.joinedAt,
+                    createdAt: member.user.createdAt,  // Account creation date
+                    isBot: member.user.bot,
+                    customStatus: customStatus,
+                    connectedAccounts: connectedAccounts
+                };
+
+                memberList.push(memberData);
+                this.members.set(member.user.id, memberData);
+            });
+
+            // Filter out bots
+            const humanMembers = memberList.filter(m => !m.isBot);
+            console.log(`   Human members: ${humanMembers.length.toLocaleString()}`);
+
+            return memberList;
+        } catch (error) {
+            clearInterval(animationInterval);
+            console.error('❌ Error fetching members:', error.message);
+            throw error;
+        }
     }
 
     /**
