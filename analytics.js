@@ -5,6 +5,77 @@ const config = require('./config');
 const utils = require('./utils');
 const { getDiscordToken } = require('./auth');
 
+// ============================================
+// TERMINAL ANIMATION UTILITIES
+// ============================================
+const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const progressChars = { filled: '█', empty: '░' };
+
+class TerminalProgress {
+    constructor() {
+        this.spinnerIndex = 0;
+        this.startTime = Date.now();
+        this.lastUpdate = 0;
+    }
+
+    getSpinner() {
+        this.spinnerIndex = (this.spinnerIndex + 1) % spinnerFrames.length;
+        return spinnerFrames[this.spinnerIndex];
+    }
+
+    formatNumber(num) {
+        if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+        if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+        return num.toString();
+    }
+
+    formatTime(ms) {
+        const seconds = Math.floor(ms / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const hours = Math.floor(minutes / 60);
+        if (hours > 0) return `${hours}h ${minutes % 60}m`;
+        if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+        return `${seconds}s`;
+    }
+
+    getProgressBar(current, total, width = 20) {
+        const percentage = total > 0 ? Math.min(current / total, 1) : 0;
+        const filled = Math.round(width * percentage);
+        const empty = width - filled;
+        const bar = progressChars.filled.repeat(filled) + progressChars.empty.repeat(empty);
+        const percent = Math.round(percentage * 100);
+        return `[${bar}] ${percent}%`;
+    }
+
+    getSpeed(count) {
+        const elapsed = (Date.now() - this.startTime) / 1000;
+        const speed = elapsed > 0 ? Math.round(count / elapsed) : 0;
+        return `${speed}/s`;
+    }
+
+    update(message) {
+        // Only update every 100ms to prevent flickering
+        const now = Date.now();
+        if (now - this.lastUpdate < 100) return;
+        this.lastUpdate = now;
+
+        // Clear line and write new content
+        process.stdout.write(`\r\x1b[K${message}`);
+    }
+
+    finish(message) {
+        process.stdout.write(`\r\x1b[K${message}\n`);
+    }
+
+    reset() {
+        this.startTime = Date.now();
+        this.spinnerIndex = 0;
+    }
+}
+
+const progress = new TerminalProgress();
+
+
 /**
  * Discord Member Analytics
  * Tracks member activity across different channel categories
@@ -92,11 +163,15 @@ class MemberAnalytics {
             throw new Error(`Server ID ${config.serverId} not found`);
         }
 
-        // Fetch all members (this may take a while for large servers)
+        // Fetch all members with chunking for large servers
         console.log(`Server: ${guild.name} (${guild.memberCount} members)`);
-        console.log('This may take a while for large servers...');
+        console.log('Fetching members (this may take a while for large servers)...');
 
-        const members = await guild.members.fetch();
+        // For large servers, we need to ensure all members are fetched
+        // Using force: true to bypass cache
+        const members = await guild.members.fetch({ force: true });
+
+        console.log(`Fetched ${members.size} members from API`);
 
         const memberList = [];
 
@@ -224,12 +299,95 @@ class MemberAnalytics {
             }
         }
 
+        // Try to refetch members who weren't found initially
+        console.log('\n🔄 Checking for unfetched members...');
+        await this.refetchMissingMembers();
+
         // Convert to array and sort by total messages
         const activityArray = Array.from(this.memberActivity.values())
             .filter(a => a.totalMessages > 0)
             .sort((a, b) => b.totalMessages - a.totalMessages);
 
         return activityArray;
+    }
+
+    /**
+     * Try to refetch member data for users marked as [Not Fetched]
+     */
+    async refetchMissingMembers() {
+        const guild = await this.client.guilds.fetch(config.serverId);
+
+        // First, count how many need refetching
+        const usersToRefetch = [];
+        for (const [userId, activity] of this.memberActivity) {
+            if (activity.roles && activity.roles.includes('[Not Fetched]') && !activity.isBot) {
+                usersToRefetch.push({ userId, activity });
+            }
+        }
+
+        if (usersToRefetch.length === 0) {
+            console.log('  ✅ All members already fetched!');
+            return;
+        }
+
+        console.log(`  Found ${usersToRefetch.length} users to refetch...`);
+        progress.reset();
+
+        let successCount = 0;
+        let failCount = 0;
+
+        for (let i = 0; i < usersToRefetch.length; i++) {
+            const { userId, activity } = usersToRefetch[i];
+
+            // Animated progress
+            const spinner = progress.getSpinner();
+            const current = i + 1;
+            const pct = Math.round((current / usersToRefetch.length) * 100);
+            progress.update(`  ${spinner} Refetching: ${current}/${usersToRefetch.length} (${pct}%) | ✓ ${successCount} | ✗ ${failCount}`);
+
+            try {
+                // Try to fetch individual member
+                const member = await guild.members.fetch(userId);
+
+                if (member) {
+                    // Get their roles
+                    const roles = member.roles.cache
+                        .filter(role => role.name !== '@everyone')
+                        .map(role => role.name);
+
+                    // Update activity with correct data
+                    activity.displayName = member.displayName;
+                    activity.discriminator = member.user.discriminator;
+                    activity.avatar = member.user.avatarURL({ dynamic: true, size: 512 });
+                    activity.roles = roles.length > 0 ? roles : ['No Roles'];
+                    activity.joinedAt = member.joinedAt;
+                    activity.createdAt = member.user.createdAt;
+
+                    // Also update members map
+                    this.members.set(userId, {
+                        id: userId,
+                        username: member.user.username,
+                        displayName: member.displayName,
+                        roles: roles,
+                        roleNames: roles,
+                        joinedAt: member.joinedAt,
+                        createdAt: member.user.createdAt
+                    });
+
+                    successCount++;
+                }
+            } catch (err) {
+                // Member truly left the server
+                activity.roles = ['[Left Server]'];
+                failCount++;
+            }
+
+            // Small delay to avoid rate limiting
+            await new Promise(r => setTimeout(r, 50));
+        }
+
+        const elapsed = progress.formatTime(Date.now() - progress.startTime);
+        progress.finish(`  ✅ Refetch complete: ${successCount} found, ${failCount} left server | Time: ${elapsed}`);
     }
 
     /**
@@ -245,13 +403,17 @@ class MemberAnalytics {
                 return;
             }
 
-            console.log(`  Channel: #${channel.name} (${channelId})`);
+            // Channel header
+            console.log(`\n  📨 #${channel.name}`);
 
             let messages = [];
             let lastId;
             let fetchedCount = 0;
             let hitLimit = false;
             let noMoreMessages = false;
+
+            // Reset progress timer
+            progress.reset();
 
             // Fetch messages with pagination
             do {
@@ -281,10 +443,14 @@ class MemberAnalytics {
                 lastId = fetchedMessages.last()?.id;
                 fetchedCount += fetchedMessages.size;
 
-                // Progress indicator
-                if (fetchedCount % 500 === 0) {
-                    console.log(`    Fetched ${fetchedCount} messages...`);
-                }
+                // Animated progress display
+                const spinner = progress.getSpinner();
+                const count = progress.formatNumber(messages.length);
+                const speed = progress.getSpeed(messages.length);
+                const elapsed = progress.formatTime(Date.now() - progress.startTime);
+                const limitStr = limit === Infinity ? '∞' : progress.formatNumber(limit);
+
+                progress.update(`     ${spinner} Fetching: ${count} messages | Speed: ${speed} | Time: ${elapsed} | Limit: ${limitStr}`);
 
                 if (messages.length >= limit) {
                     messages = messages.slice(0, limit);
@@ -296,6 +462,7 @@ class MemberAnalytics {
                 await new Promise(r => setTimeout(r, 100));
 
             } while (true);
+
 
             // Track channel stats
             const channelStat = {
@@ -309,8 +476,11 @@ class MemberAnalytics {
             };
             this.channelStats.push(channelStat);
 
-            const limitStatus = hitLimit ? '⚠️ HIT LIMIT' : '✅ Complete';
-            console.log(`    Total: ${messages.length} messages (all users) - ${limitStatus}`);
+            // Final status with nice formatting
+            const totalFormatted = progress.formatNumber(messages.length);
+            const elapsed = progress.formatTime(Date.now() - progress.startTime);
+            const limitStatus = hitLimit ? '⚠️  HIT LIMIT' : '✅ Complete';
+            progress.finish(`     ✓ Done: ${totalFormatted} messages | Time: ${elapsed} | ${limitStatus}`);
 
             // Count messages per user for this category
             for (const msg of messages) {
@@ -318,15 +488,33 @@ class MemberAnalytics {
 
                 // If user not in activity map, check if they're in members map
                 if (!activity) {
-                    // Check if user exists in members (might be a bot or left server)
-                    const memberData = this.members.get(msg.authorId);
+                    // Check if user exists in members cache
+                    let memberData = this.members.get(msg.authorId);
+
+                    // Determine roles based on available data
+                    let userRoles;
+                    if (memberData) {
+                        userRoles = memberData.roleNames;
+                    } else if (msg.isBot) {
+                        userRoles = ['[Bot]'];
+                    } else {
+                        // User not in our member cache - they may have left or weren't fetched
+                        userRoles = ['[Not Fetched]'];
+                    }
 
                     activity = {
                         userId: msg.authorId,
                         username: msg.authorUsername,
                         displayName: memberData ? memberData.displayName : msg.authorUsername,
-                        roles: memberData ? memberData.roleNames : (msg.isBot ? ['[Bot]'] : ['[Left Server]']),
+                        discriminator: memberData?.discriminator || '0',
+                        avatar: memberData?.avatar || null,
+                        accentColor: memberData?.accentColor || null,
+                        roles: userRoles,
                         isBot: msg.isBot,
+                        joinedAt: memberData?.joinedAt || null,
+                        createdAt: memberData?.createdAt || null,
+                        customStatus: memberData?.customStatus || null,
+                        connectedAccounts: memberData?.connectedAccounts || [],
                         activity: {},
                         totalMessages: 0,
                         firstMessageDate: null,
