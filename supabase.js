@@ -39,6 +39,7 @@ async function saveToSupabase(activityData) {
         username: member.username,
         display_name: member.displayName,
         roles: member.roles || [],
+        is_bot: member.isBot || false,
         tweet: member.activity?.tweet || 0,
         art: member.activity?.art || 0,
         other: member.activity?.other || 0,

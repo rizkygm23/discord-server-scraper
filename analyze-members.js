@@ -101,7 +101,7 @@ async function main() {
             console.log(`   Database: ${dbResult.success} saved, ${dbResult.errors} errors`);
         }
 
-        // Step 6: Show quick summary
+        // Step 7: Show quick summary
         console.log('\n');
         console.log('╔════════════════════════════════════════════╗');
         console.log('║              QUICK SUMMARY                 ║');
@@ -110,6 +110,38 @@ async function main() {
         console.log(`Total Members: ${members.length}`);
         console.log(`Active Members: ${activityData.length}`);
         console.log('');
+
+        // Show channel statistics
+        const channelStats = analytics.getChannelStats();
+        if (channelStats.length > 0) {
+            console.log('📊 CHANNEL STATISTICS');
+            console.log('-'.repeat(60));
+
+            // Group by category
+            const categories = {};
+            channelStats.forEach(stat => {
+                if (!categories[stat.category]) {
+                    categories[stat.category] = [];
+                }
+                categories[stat.category].push(stat);
+            });
+
+            for (const [category, stats] of Object.entries(categories)) {
+                console.log(`\n  ${category.toUpperCase()}:`);
+                stats.forEach(stat => {
+                    const status = stat.hitLimit ? '⚠️ HIT LIMIT' : '✅ Complete';
+                    console.log(`    #${stat.channelName.substring(0, 20).padEnd(20)} - ${stat.messageCount.toString().padStart(7)} msgs - ${status}`);
+                });
+            }
+
+            // Summary
+            const hitLimitCount = channelStats.filter(s => s.hitLimit).length;
+            const completeCount = channelStats.filter(s => !s.hitLimit).length;
+            console.log('');
+            console.log(`  Summary: ${completeCount} complete, ${hitLimitCount} hit limit (${MESSAGE_LIMIT}/channel)`);
+            console.log('');
+        }
+
 
         // Show top 10 for tweet
         const tweetLeaderboard = analytics.generateLeaderboard('tweet', 10);

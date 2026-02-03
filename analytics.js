@@ -26,6 +26,9 @@ class MemberAnalytics {
 
         // Store activity data per member
         this.memberActivity = new Map();
+
+        // Track channel statistics
+        this.channelStats = [];
     }
 
     async initialize() {
@@ -182,6 +185,9 @@ class MemberAnalytics {
             });
         });
 
+        // Reset channel stats
+        this.channelStats = [];
+
         // Process each category
         for (const [category, channelIds] of Object.entries(channelCategories)) {
             console.log(`\n📁 Processing category: ${category}`);
@@ -201,6 +207,7 @@ class MemberAnalytics {
 
     /**
      * Process a single channel and count messages per user
+     * Now includes ALL messages (including bots)
      */
     async processChannel(channelId, category, limit) {
         try {
@@ -216,6 +223,8 @@ class MemberAnalytics {
             let messages = [];
             let lastId;
             let fetchedCount = 0;
+            let hitLimit = false;
+            let noMoreMessages = false;
 
             // Fetch messages with pagination
             do {
@@ -224,19 +233,22 @@ class MemberAnalytics {
 
                 const fetchedMessages = await channel.messages.fetch(options);
 
-                if (fetchedMessages.size === 0) break;
+                if (fetchedMessages.size === 0) {
+                    noMoreMessages = true;
+                    break;
+                }
 
+                // Include ALL messages (bots included)
                 fetchedMessages.forEach(msg => {
-                    if (!msg.author.bot) {
-                        messages.push({
-                            authorId: msg.author.id,
-                            authorUsername: msg.author.username,
-                            content: msg.content,
-                            hasAttachment: msg.attachments.size > 0,
-                            attachmentCount: msg.attachments.size,
-                            createdAt: msg.createdAt
-                        });
-                    }
+                    messages.push({
+                        authorId: msg.author.id,
+                        authorUsername: msg.author.username,
+                        isBot: msg.author.bot,
+                        content: msg.content,
+                        hasAttachment: msg.attachments.size > 0,
+                        attachmentCount: msg.attachments.size,
+                        createdAt: msg.createdAt
+                    });
                 });
 
                 lastId = fetchedMessages.last()?.id;
@@ -249,6 +261,7 @@ class MemberAnalytics {
 
                 if (messages.length >= limit) {
                     messages = messages.slice(0, limit);
+                    hitLimit = true;
                     break;
                 }
 
@@ -257,19 +270,36 @@ class MemberAnalytics {
 
             } while (true);
 
-            console.log(`    Total: ${messages.length} messages (excluding bots)`);
+            // Track channel stats
+            const channelStat = {
+                channelId,
+                channelName: channel.name,
+                category,
+                messageCount: messages.length,
+                limit,
+                hitLimit,
+                complete: noMoreMessages || hitLimit
+            };
+            this.channelStats.push(channelStat);
+
+            const limitStatus = hitLimit ? '⚠️ HIT LIMIT' : '✅ Complete';
+            console.log(`    Total: ${messages.length} messages (all users) - ${limitStatus}`);
 
             // Count messages per user for this category
             for (const msg of messages) {
                 let activity = this.memberActivity.get(msg.authorId);
 
-                // If user left the server, create entry for them
+                // If user not in activity map, check if they're in members map
                 if (!activity) {
+                    // Check if user exists in members (might be a bot or left server)
+                    const memberData = this.members.get(msg.authorId);
+
                     activity = {
                         userId: msg.authorId,
                         username: msg.authorUsername,
-                        displayName: msg.authorUsername,
-                        roles: ['[Left Server]'],
+                        displayName: memberData ? memberData.displayName : msg.authorUsername,
+                        roles: memberData ? memberData.roleNames : (msg.isBot ? ['[Bot]'] : ['[Left Server]']),
+                        isBot: msg.isBot,
                         activity: {},
                         totalMessages: 0,
                         firstMessageDate: null,
@@ -299,6 +329,13 @@ class MemberAnalytics {
         } catch (error) {
             console.error(`  Error processing channel ${channelId}:`, error.message);
         }
+    }
+
+    /**
+     * Get channel statistics
+     */
+    getChannelStats() {
+        return this.channelStats;
     }
 
     /**

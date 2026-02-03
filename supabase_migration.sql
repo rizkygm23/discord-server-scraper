@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS seismic_dc_user (
     username TEXT NOT NULL,                 -- Discord Username
     display_name TEXT,                      -- Discord Display Name
     roles TEXT[],                           -- Array of role names
+    is_bot BOOLEAN DEFAULT FALSE,           -- Is this a bot account
     tweet INTEGER DEFAULT 0,                -- Tweet posts count
     art INTEGER DEFAULT 0,                  -- Art submissions count
     other INTEGER DEFAULT 0,                -- Other channel messages
