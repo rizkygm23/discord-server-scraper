@@ -28,7 +28,7 @@ const CHANNEL_CATEGORIES = {
 const INCLUDE_ALL_CHANNELS = true;
 
 // Berapa banyak pesan yang ingin diambil per channel (max)
-const MESSAGE_LIMIT = 1000000;
+const MESSAGE_LIMIT = 100000000;
 
 /**
  * Main function
