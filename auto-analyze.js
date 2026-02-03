@@ -63,7 +63,7 @@ async function runAnalysis() {
         // Ideally we resolve them to actual IDs if they aren't already
 
         // 3. Analyze Activity
-        const activityData = await analytics.analyzeActivity(CHANNEL_CATEGORIES);
+        const activityData = await analytics.analyzeActivity(CHANNEL_CATEGORIES, Infinity);
 
         // 4. Apply Day-Specific Logic (Thursday/Saturday)
         // Check current day in UTC
