@@ -40,7 +40,6 @@ async function saveToSupabase(activityData) {
         display_name: member.displayName,
         discriminator: member.discriminator || '0',
         avatar_url: member.avatar || null,
-        banner_url: member.banner || null,
         accent_color: member.accentColor || null,
         roles: member.roles || [],
         is_bot: member.isBot || false,
