@@ -24,11 +24,12 @@ const CHANNEL_CATEGORIES = {
     // "all_messages" akan di-handle khusus - mengambil SEMUA channel
 };
 
-// Set true untuk juga menghitung SEMUA pesan di seluruh server
-const INCLUDE_ALL_CHANNELS = true;
+// Set FALSE untuk hanya track tweet dan art saja (tidak scan semua channel)
+const INCLUDE_ALL_CHANNELS = false;
 
 // Berapa banyak pesan yang ingin diambil per channel (max)
-const MESSAGE_LIMIT = 100000000;
+// Infinity = ambil semua sampai habis
+const MESSAGE_LIMIT = Infinity;
 
 /**
  * Main function

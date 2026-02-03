@@ -82,7 +82,7 @@ class MemberAnalytics {
     }
 
     /**
-     * Get all members from the server with their roles
+     * Get all members from the server with their roles and extended info
      */
     async getAllMembers() {
         console.log('Fetching all server members...');
@@ -109,16 +109,36 @@ class MemberAnalytics {
                     color: role.hexColor
                 }));
 
+            // Get custom status from presence activities
+            let customStatus = null;
+            if (member.presence && member.presence.activities) {
+                const customActivity = member.presence.activities.find(
+                    a => a.type === 4 || a.type === 'CUSTOM'
+                );
+                if (customActivity) {
+                    customStatus = customActivity.state || customActivity.name;
+                }
+            }
+
+            // Get connected accounts (if available through profile)
+            // Note: Connected accounts require fetching user profile which may not always be available
+            let connectedAccounts = [];
+
             const memberData = {
                 id: member.user.id,
                 username: member.user.username,
                 displayName: member.displayName,
                 discriminator: member.user.discriminator,
-                avatar: member.user.avatarURL({ dynamic: true }),
+                avatar: member.user.avatarURL({ dynamic: true, size: 512 }),
+                banner: member.user.bannerURL ? member.user.bannerURL({ dynamic: true, size: 1024 }) : null,
+                accentColor: member.user.accentColor || null,
                 roles: roles,
                 roleNames: roles.map(r => r.name),
                 joinedAt: member.joinedAt,
-                isBot: member.user.bot
+                createdAt: member.user.createdAt,  // Account creation date
+                isBot: member.user.bot,
+                customStatus: customStatus,
+                connectedAccounts: connectedAccounts
             };
 
             memberList.push(memberData);
@@ -177,7 +197,16 @@ class MemberAnalytics {
                 userId: id,
                 username: member.username,
                 displayName: member.displayName,
+                discriminator: member.discriminator,
+                avatar: member.avatar,
+                banner: member.banner,
+                accentColor: member.accentColor,
                 roles: member.roleNames,
+                isBot: member.isBot,
+                joinedAt: member.joinedAt,
+                createdAt: member.createdAt,
+                customStatus: member.customStatus,
+                connectedAccounts: member.connectedAccounts,
                 activity: {},
                 totalMessages: 0,
                 firstMessageDate: null,
