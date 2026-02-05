@@ -6,7 +6,8 @@ require('dotenv').config();
  */
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+// Prioritize Service Role Key for backend writes to bypass RLS
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
     console.warn('⚠️ Supabase credentials not configured. Data will not be saved to database.');
@@ -136,9 +137,41 @@ async function getLeaderboard(category = 'total_messages', limit = 50) {
     return data;
 }
 
+
+
+/**
+ * Test Supabase connection
+ * @returns {Promise<boolean>}
+ */
+async function testConnection() {
+    if (!supabase) {
+        console.error('❌ Supabase client is not initialized (missing URL or KEY).');
+        return false;
+    }
+
+    try {
+        console.log('📡 Testing connection to Supabase...');
+        const { data, error, count } = await supabase
+            .from('seismic_dc_user')
+            .select('id', { count: 'exact', head: true });
+
+        if (error) {
+            console.error('❌ Supabase connection failed:', error.message);
+            return false;
+        }
+
+        console.log(`✅ Connection successful! Found ${count} records in 'seismic_dc_user'.`);
+        return true;
+    } catch (err) {
+        console.error('❌ Unexpected error during Supabase connection test:', err);
+        return false;
+    }
+}
+
 module.exports = {
     supabase,
     saveToSupabase,
     getMembersFromSupabase,
-    getLeaderboard
+    getLeaderboard,
+    testConnection
 };

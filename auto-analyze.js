@@ -1,5 +1,5 @@
 const MemberAnalytics = require('./analytics');
-const { saveToSupabase, getMembersFromSupabase } = require('./supabase');
+const { saveToSupabase, getMembersFromSupabase, testConnection } = require('./supabase');
 const config = require('./config');
 
 // Hardcoded Channel Configuration (copied from analyze-members.js)
@@ -49,6 +49,14 @@ function getTimeUntilNextRun() {
 
 async function runAnalysis() {
     console.log(`\n🚀 Starting Scheduled Analysis at ${new Date().toISOString()}`);
+
+    // 0. Test Database Connection FIRST
+    const isDbConnected = await testConnection();
+    if (!isDbConnected) {
+        console.error('🛑 ABORTING ANALYSIS: Database connection is not available.');
+        console.error('   Please check your .env file and Supabase project status.');
+        return; // Stop execution here
+    }
 
     const analytics = new MemberAnalytics(CHANNEL_CATEGORIES);
 

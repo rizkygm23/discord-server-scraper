@@ -33,7 +33,10 @@ Database untuk menyimpan data member Discord beserta aktivitas mereka di server.
 | `art` | INTEGER | NO | 0 | Art channel message count |
 | `total_messages` | INTEGER | NO | 0 | Total contributions (tweet + art) |
 | `first_message_date` | TIMESTAMP | YES | NULL | First message timestamp |
-| `last_message_date` | TIMESTAMP | YES | NULL | Last message timestamp |
+| `last_message_date` | TIMESTAMP | YES | NULL | Date of the latest message sent |
+| `role_kamis` | DECIMAL(3,1) | YES | NULL | **Snapshot**: Highest "Magnitude" role value captured on Thursday |
+| `role_sabtu` | DECIMAL(3,1) | YES | NULL | **Snapshot**: Highest "Magnitude" role value captured on Saturday |
+| `is_promoted` | BOOLEAN | YES | FALSE | **Analysis**: TRUE if `role_sabtu` > `role_kamis` (Promoted this week) |
 | `created_at` | TIMESTAMPTZ | NO | NOW() | Record creation time |
 | `updated_at` | TIMESTAMPTZ | NO | NOW() | Record last update time |
 
