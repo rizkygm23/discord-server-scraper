@@ -56,7 +56,7 @@ async function saveToSupabase(activityData) {
         x_username: member.xUsername || null,
         // Role Snapshots & Promotion
         role_kamis: member.roleKamis || undefined, // undefined means do not touch existing value if not provided
-        role_sabtu: member.roleSabtu || undefined,
+        role_jumat: member.roleJumat || undefined,
         is_promoted: member.isPromoted || undefined
     }));
 

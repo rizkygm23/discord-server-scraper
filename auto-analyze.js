@@ -36,15 +36,10 @@ function getHighestMagnitude(roles) {
     return maxMag > 0 ? maxMag : null;
 }
 
-// Helper to calculate time until next 00:00 UTC
+// Helper to calculate time until next run (5 minutes cooldown)
 function getTimeUntilNextRun() {
-    const now = new Date();
-    const target = new Date(now);
-
-    // Set to next 00:00 UTC
-    target.setUTCHours(24, 0, 0, 0);
-
-    return target.getTime() - now.getTime();
+    const COOLDOWN_MINUTES = 5;
+    return COOLDOWN_MINUTES * 60 * 1000;
 }
 
 async function runAnalysis() {
@@ -57,6 +52,8 @@ async function runAnalysis() {
         console.error('   Please check your .env file and Supabase project status.');
         return; // Stop execution here
     }
+
+    const startTime = Date.now();
 
     const analytics = new MemberAnalytics(CHANNEL_CATEGORIES);
 
@@ -73,16 +70,16 @@ async function runAnalysis() {
         // 3. Analyze Activity
         const activityData = await analytics.analyzeActivity(CHANNEL_CATEGORIES, Infinity);
 
-        // 4. Apply Day-Specific Logic (Thursday/Saturday)
+        // 4. Apply Day-Specific Logic (Thursday/Friday)
         // Check current day in UTC
         const now = new Date();
-        const dayOfWeek = now.getUTCDay(); // 0=Sun, 1=Mon, ..., 4=Thu, 6=Sat
+        const dayOfWeek = now.getUTCDay(); // 0=Sun, 1=Mon, ..., 4=Thu, 5=Fri
 
-        // Fetch existing data to compare (e.g. for Saturday comparison)
+        // Fetch existing data to compare (e.g. for Friday comparison)
         const existingDBMembers = await getMembersFromSupabase();
         const existingMap = new Map(existingDBMembers.map(m => [m.user_id, m]));
 
-        console.log(`\n📅 Today is UTC Day: ${dayOfWeek} (0=Sun, 4=Thu, 6=Sat)`);
+        console.log(`\n📅 Today is UTC Day: ${dayOfWeek} (0=Sun, 4=Thu, 5=Fri)`);
 
         // Enrich activity data with snapshot logic
         const enrichedData = activityData.map(member => {
@@ -95,9 +92,9 @@ async function runAnalysis() {
                 console.log(`   📸 Snapshotting Thursday Role for ${member.username}: ${highestMag}`);
                 updates.roleKamis = highestMag;
             }
-            else if (dayOfWeek === 6) { // SATURDAY
-                console.log(`   📸 Snapshotting Saturday Role for ${member.username}: ${highestMag}`);
-                updates.roleSabtu = highestMag;
+            else if (dayOfWeek === 5) { // FRIDAY
+                console.log(`   📸 Snapshotting Friday Role for ${member.username}: ${highestMag}`);
+                updates.roleJumat = highestMag;
 
                 // Compare Logic
                 // We need the PREVIOUS Thursday's role. 
@@ -123,7 +120,12 @@ async function runAnalysis() {
         // 6. Save to Supabase
         await saveToSupabase(enrichedData);
 
-        console.log('\n✅ Analysis Cycle Complete');
+        const duration = Date.now() - startTime;
+        const minutes = Math.floor(duration / 60000);
+        const seconds = ((duration % 60000) / 1000).toFixed(0);
+
+        console.log(`\n✅ Analysis Cycle Complete`);
+        console.log(`⏱️ Duration: ${minutes}m ${seconds}s`);
 
     } catch (error) {
         console.error('❌ Analysis failed with error:', error);
@@ -135,51 +137,25 @@ async function runAnalysis() {
 // --- Main Loop ---
 async function startLoop() {
     console.log('🤖 Discord Scraper Automation Bot Started');
-    console.log('   Waiting for next scheduled run (00:00 UTC)...');
+    console.log('   Running in continuous mode (5 minutes cooldown)');
 
-    // Run immediately on start? 
-    // Uncomment next line if you want to run once immediately for testing
-    // await runAnalysis();
-
-    const checkInterval = setInterval(async () => {
-        const now = new Date();
-
-        // Check if it's 00:00 UTC (with 1 minute tolerance window)
-        // We use a flag or just check minutes to avoid double-running
-        if (now.getUTCHours() === 0 && now.getUTCMinutes() === 0) {
-            console.log('⏰ It is 00:00 UTC! Triggering analysis...');
-            await runAnalysis();
-
-            // Wait 61 seconds to ensure we don't double trigger in the same minute
-            // But since this is inside an interval, we just need to be careful.
-            // A better way is Calculate Timeout for next run.
-        }
-    }, 60000); // Check every minute
-
-    // Better Approach: Calculate precise timeout
-    const scheduleNext = async () => {
-        const msUntilNext = getTimeUntilNextRun();
-        const nextDate = new Date(Date.now() + msUntilNext);
-
-        console.log(`\n💤 Sleeping for ${(msUntilNext / 1000 / 3600).toFixed(2)} hours`);
-        console.log(`⏰ Next run scheduled for: ${nextDate.toUTCString()}`);
-
-        setTimeout(async () => {
-            await runAnalysis();
-            scheduleNext(); // Schedule the next one after completion
-        }, msUntilNext);
-    };
-
-    // First run logic: 
-    // Do you want to run NOW or wait for midnight?
-    // User requested "analyze ulang setiap hari sekali di jam 00:00 UTC otomatis"
-    // Usually implies "Start now, then loop" OR "Wait for first midnight".
-    // I will trigger one run NOW to verify, then schedule loop.
-
-    console.log('🏁 Initializing first run...');
+    // Run immediately on start
     await runAnalysis();
     scheduleNext();
 }
+
+const scheduleNext = () => {
+    const msUntilNext = getTimeUntilNextRun();
+    const nextDate = new Date(Date.now() + msUntilNext);
+
+    console.log(`\n💤 Sleeping for ${(msUntilNext / 1000 / 60).toFixed(1)} minutes`);
+    console.log(`⏰ Next run scheduled for: ${nextDate.toUTCString()}`);
+
+    setTimeout(async () => {
+        await runAnalysis();
+        scheduleNext(); // Schedule the next one after completion
+    }, msUntilNext);
+};
 
 // Start the engine
 startLoop();
