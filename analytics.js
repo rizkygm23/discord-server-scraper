@@ -345,6 +345,7 @@ class MemberAnalytics {
                 connectedAccounts: member.connectedAccounts,
                 activity: {},
                 totalMessages: 0,
+                xUsername: null,
                 firstMessageDate: null,
                 lastMessageDate: null
             });
@@ -580,6 +581,7 @@ class MemberAnalytics {
                         connectedAccounts: memberData?.connectedAccounts || [],
                         activity: {},
                         totalMessages: 0,
+                        xUsername: null,
                         firstMessageDate: null,
                         lastMessageDate: null
                     };
@@ -601,6 +603,16 @@ class MemberAnalytics {
                 }
                 if (!activity.lastMessageDate || msgDate > activity.lastMessageDate) {
                     activity.lastMessageDate = msgDate;
+                }
+
+                // Extract X/Twitter Username if in tweet category
+                if (category === 'tweet' && !activity.xUsername && msg.content) {
+                    // Match pattern: https://x.com/username/status/... or https://twitter.com/username/status/...
+                    const xMatch = msg.content.match(/https?:\/\/(?:www\.)?(?:twitter|x)\.com\/([^\/]+)\/status\/\d+/i);
+                    if (xMatch && xMatch[1]) {
+                        activity.xUsername = xMatch[1];
+                        // console.log(`    Found X username for ${activity.displayName}: ${activity.xUsername}`);
+                    }
                 }
             }
 
@@ -706,7 +718,7 @@ class MemberAnalytics {
         console.log(`✅ Saved readable report to activity_report.txt`);
 
         // 5. Generate CSV for spreadsheet import
-        let csv = 'Rank,User ID,Username,Display Name,Roles,Total Messages';
+        let csv = 'Rank,User ID,Username,Display Name,Roles,Total Messages,X Username';
         const catArray = Array.from(categories);
         catArray.forEach(cat => {
             csv += `,${cat}`;
@@ -719,7 +731,8 @@ class MemberAnalytics {
             csv += `"${member.username}",`;
             csv += `"${member.displayName}",`;
             csv += `"${member.roles.join('; ')}",`;
-            csv += `${member.totalMessages}`;
+            csv += `${member.totalMessages},`;
+            csv += `"${member.xUsername || ''}"`;
 
             catArray.forEach(cat => {
                 csv += `,${member.activity[cat] || 0}`;

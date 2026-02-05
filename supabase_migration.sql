@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS seismic_dc_user (
     art INTEGER DEFAULT 0,                      -- Art submissions count
     other INTEGER DEFAULT 0,                    -- Other channel messages
     total_messages INTEGER DEFAULT 0,           -- Total messages across all channels
+    x_username TEXT,                            -- Twitter/X Username (extracted from tweet links)
     first_message_date TIMESTAMP,               -- First message date
     last_message_date TIMESTAMP,                -- Last message date
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
