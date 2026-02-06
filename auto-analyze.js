@@ -91,8 +91,15 @@ async function runAnalysis() {
             if (dayOfWeek === 4) { // THURSDAY
                 console.log(`   📸 Snapshotting Thursday Role for ${member.username}: ${highestMag}`);
                 updates.roleKamis = highestMag;
+            } else {
+                // PRESERVE existing Thursday role if it's not Thursday
+                // This prevents overwriting it with NULL during upserts
+                if (existing && existing.role_kamis != null) {
+                    updates.roleKamis = existing.role_kamis;
+                }
             }
-            else if (dayOfWeek === 5) { // FRIDAY
+
+            if (dayOfWeek === 5) { // FRIDAY
                 console.log(`   📸 Snapshotting Friday Role for ${member.username}: ${highestMag}`);
                 updates.roleJumat = highestMag;
 
@@ -108,6 +115,12 @@ async function runAnalysis() {
                     } else {
                         updates.isPromoted = false;
                     }
+                }
+            } else {
+                // PRESERVE existing Friday role & promotion status on other days
+                if (existing) {
+                    if (existing.role_jumat != null) updates.roleJumat = existing.role_jumat;
+                    if (existing.is_promoted != null) updates.isPromoted = existing.is_promoted;
                 }
             }
 
