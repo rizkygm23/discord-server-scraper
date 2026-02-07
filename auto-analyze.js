@@ -18,15 +18,20 @@ const CHANNEL_CATEGORIES = {
 // Helper to extract highest magnitude from role list
 function getHighestMagnitude(roles) {
     let maxMag = 0.0;
-    const regex = /^Magnitude (\d+(\.\d+)?)$/;
+    // Regex for "Magnitude X.X" or just "Magnitude X"
+    const regex = /^magnitude\s+(\d+(\.\d+)?)$/i;
 
     if (!roles || !Array.isArray(roles)) return null;
 
     roles.forEach(role => {
         // Handle both string array or object array with 'name' property
-        const roleName = typeof role === 'string' ? role : role.name;
+        const roleData = typeof role === 'string' ? role : role.name;
 
+        if (!roleData) return;
+
+        const roleName = roleData.trim(); // Trim whitespace
         const match = roleName.match(regex);
+
         if (match) {
             const val = parseFloat(match[1]);
             if (val > maxMag) maxMag = val;
