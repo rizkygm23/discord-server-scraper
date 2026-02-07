@@ -169,10 +169,58 @@ async function testConnection() {
     }
 }
 
+/**
+ * Check for users who have Magnitude roles but are missing snapshots
+ * @returns {Promise<number>} - Count of missing users
+ */
+async function checkMissingSnapshots() {
+    if (!supabase) return 0;
+
+    // Fetch users with NULL snapshots
+    const { data, error } = await supabase
+        .from('seismic_dc_user')
+        .select('username, roles, role_kamis, role_jumat')
+        .is('role_kamis', null)
+        .is('role_jumat', null);
+
+    if (error) {
+        console.error('Error checking missing snapshots:', error.message);
+        return 0;
+    }
+
+    if (!data || data.length === 0) return 0;
+
+    // Filter locally for 'Magnitude' roles
+    // Regex matches "Magnitude 1.0" or "magnitude 5" etc
+    const magnitudeRegex = /magnitude\s+[1-9]/i;
+
+    // We only care about users who actually HAVE a magnitude role
+    // but somehow the scraper "Missed" snapshotting them.
+    const missingUsers = data.filter(user => {
+        if (!user.roles || !Array.isArray(user.roles)) return false;
+        // Check if any role string matches the regex
+        return user.roles.some(role => {
+            const rName = typeof role === 'string' ? role : role.name;
+            return rName && magnitudeRegex.test(rName);
+        });
+    });
+
+    if (missingUsers.length > 0) {
+        console.log(`\n⚠️  WARNING: Found ${missingUsers.length} users with Magnitude roles but MISSING snapshots!`);
+        // Show first 5 examples
+        missingUsers.slice(0, 5).forEach(u => console.log(`   - ${u.username}: ${JSON.stringify(u.roles)}`));
+    } else {
+        console.log('\n✅ Data Integrity Check: All Magnitude users have snapshots.');
+    }
+
+    return missingUsers.length;
+}
+
 module.exports = {
     supabase,
     saveToSupabase,
     getMembersFromSupabase,
     getLeaderboard,
-    testConnection
+    testConnection,
+    checkMissingSnapshots
 };

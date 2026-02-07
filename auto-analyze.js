@@ -1,5 +1,5 @@
 const MemberAnalytics = require('./analytics');
-const { saveToSupabase, getMembersFromSupabase, testConnection } = require('./supabase');
+const { saveToSupabase, getMembersFromSupabase, testConnection, checkMissingSnapshots } = require('./supabase');
 const config = require('./config');
 
 // Hardcoded Channel Configuration (copied from analyze-members.js)
@@ -137,6 +137,13 @@ async function runAnalysis() {
 
         // 6. Save to Supabase
         await saveToSupabase(enrichedData);
+
+        // 7. Data Integrity Check (Check for NULL Snapshots)
+        // Only run this check if today is Thursday or Friday to verify the snapshot worked
+        if (dayOfWeek === 4 || dayOfWeek === 5) {
+            console.log('\n🔍 Running Data Integrity Check...');
+            await checkMissingSnapshots();
+        }
 
         const duration = Date.now() - startTime;
         const minutes = Math.floor(duration / 60000);
