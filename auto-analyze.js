@@ -41,6 +41,32 @@ function getHighestMagnitude(roles) {
     return maxMag > 0 ? maxMag : null;
 }
 
+// List of known regional roles from the Discord server
+const REGIONAL_ROLES = [
+    'Ukrainian', 'Indian', 'Turkish', 'Russian', 'Indonesian',
+    'Nigerian', 'Vietnamese', 'Pakistan', 'Philippines', 'Chinese',
+    'Korean', 'Japanese', 'Bangladeshi', 'Iranian', 'Italian',
+    'Brazilian', 'French', 'Thai', 'Polish', 'Portugal',
+    'Singapore/Malaysia', 'Moroccan', 'Arabic', 'Egyptian'
+];
+
+// Helper to extract regional role from user's roles
+function getRegionalRole(roles) {
+    if (!roles || !Array.isArray(roles)) return null;
+
+    for (const role of roles) {
+        const roleName = typeof role === 'string' ? role : role.name;
+        if (!roleName) continue;
+
+        // Check if role matches any known regional role (case-insensitive)
+        const found = REGIONAL_ROLES.find(
+            r => r.toLowerCase() === roleName.trim().toLowerCase()
+        );
+        if (found) return found;
+    }
+    return null;
+}
+
 // Helper to calculate time until next run (5 minutes cooldown)
 function getTimeUntilNextRun() {
     const COOLDOWN_MINUTES = 5;
@@ -89,9 +115,15 @@ async function runAnalysis() {
         // Enrich activity data with snapshot logic
         const enrichedData = activityData.map(member => {
             const highestMag = getHighestMagnitude(member.roles);
+            const region = getRegionalRole(member.roles); // Detect regional role
             const existing = existingMap.get(member.userId);
 
             const updates = { ...member };
+
+            // Always update region if detected
+            if (region) {
+                updates.region = region;
+            }
 
             if (dayOfWeek === 4) { // THURSDAY
                 console.log(`   📸 Snapshotting Thursday Role for ${member.username}: ${highestMag}`);

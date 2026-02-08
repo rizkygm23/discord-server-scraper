@@ -70,6 +70,9 @@ async function saveToSupabase(activityData) {
         if (member.isPromoted !== undefined && member.isPromoted !== null) {
             record.is_promoted = member.isPromoted;
         }
+        if (member.region) {
+            record.region = member.region;
+        }
 
         return record;
     });

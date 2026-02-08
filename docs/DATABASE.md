@@ -37,6 +37,8 @@ Database untuk menyimpan data member Discord beserta aktivitas mereka di server.
 | `role_kamis` | DECIMAL(3,1) | YES | NULL | **Snapshot**: Highest "Magnitude" role value captured on Thursday |
 | `role_jumat` | DECIMAL(3,1) | YES | NULL | **Snapshot**: Highest "Magnitude" role value captured on Friday |
 | `is_promoted` | BOOLEAN | YES | FALSE | **Analysis**: TRUE if `role_jumat` > `role_kamis` (Promoted this week) |
+| `x_username` | TEXT | YES | NULL | Twitter/X username extracted from tweet links |
+| `region` | VARCHAR(100) | YES | NULL | User's regional/nationality role (e.g. Indonesian, Nigerian) |
 | `created_at` | TIMESTAMPTZ | NO | NOW() | Record creation time |
 | `updated_at` | TIMESTAMPTZ | NO | NOW() | Record last update time |
 
@@ -121,6 +123,11 @@ ALTER TABLE seismic_dc_user ADD COLUMN IF NOT EXISTS joined_at TIMESTAMP;
 ALTER TABLE seismic_dc_user ADD COLUMN IF NOT EXISTS account_created TIMESTAMP;
 ALTER TABLE seismic_dc_user ADD COLUMN IF NOT EXISTS custom_status TEXT;
 ALTER TABLE seismic_dc_user ADD COLUMN IF NOT EXISTS connected_accounts TEXT[];
+ALTER TABLE seismic_dc_user ADD COLUMN IF NOT EXISTS x_username TEXT;
+ALTER TABLE seismic_dc_user ADD COLUMN IF NOT EXISTS region VARCHAR(100);
+ALTER TABLE seismic_dc_user ADD COLUMN IF NOT EXISTS role_kamis DECIMAL(3,1);
+ALTER TABLE seismic_dc_user ADD COLUMN IF NOT EXISTS role_jumat DECIMAL(3,1);
+ALTER TABLE seismic_dc_user ADD COLUMN IF NOT EXISTS is_promoted BOOLEAN DEFAULT FALSE;
 ```
 
 ### Auto-Update Trigger
@@ -155,7 +162,7 @@ CREATE TRIGGER update_seismic_dc_user_updated_at
   "avatar_url": "https://cdn.discordapp.com/avatars/414717779912949760/abc123.png",
   "banner_url": null,
   "accent_color": null,
-  "roles": ["OG", "Whale", "Magnitude 3.0", "Verified"],
+  "roles": ["OG", "Whale", "Magnitude 3.0", "Verified", "Indonesian"],
   "is_bot": false,
   "joined_at": "2024-01-15T10:00:00.000Z",
   "account_created": "2018-05-20T08:30:00.000Z",
@@ -166,6 +173,11 @@ CREATE TRIGGER update_seismic_dc_user_updated_at
   "total_messages": 201,
   "first_message_date": "2024-01-16T12:30:00.000Z",
   "last_message_date": "2024-02-03T09:15:00.000Z",
+  "x_username": "cryptowhale",
+  "region": "Indonesian",
+  "role_kamis": 3.0,
+  "role_jumat": 3.0,
+  "is_promoted": false,
   "created_at": "2024-02-01T00:00:00.000Z",
   "updated_at": "2024-02-03T10:00:00.000Z"
 }
@@ -261,6 +273,41 @@ SELECT
     SUM(art) as art_messages,
     AVG(total_messages) FILTER (WHERE total_messages > 0) as avg_messages_per_active_user
 FROM seismic_dc_user;
+```
+
+### Get Users by Region
+
+```sql
+SELECT * FROM seismic_dc_user
+WHERE region = 'Indonesian'
+ORDER BY total_messages DESC;
+```
+
+### Count Users by Region
+
+```sql
+SELECT 
+    region,
+    COUNT(*) as user_count,
+    SUM(total_messages) as total_contributions
+FROM seismic_dc_user
+WHERE region IS NOT NULL
+GROUP BY region
+ORDER BY user_count DESC;
+```
+
+### Get Promoted Users This Week
+
+```sql
+SELECT 
+    username,
+    display_name,
+    role_kamis,
+    role_jumat,
+    region
+FROM seismic_dc_user
+WHERE is_promoted = TRUE
+ORDER BY role_jumat DESC;
 ```
 
 ---
