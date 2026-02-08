@@ -35,30 +35,44 @@ async function saveToSupabase(activityData) {
     const batchSize = 100; // Insert in batches to avoid timeout
 
     // Transform data to match table schema
-    const records = activityData.map(member => ({
-        user_id: member.userId,
-        username: member.username,
-        display_name: member.displayName,
-        discriminator: member.discriminator || '0',
-        avatar_url: member.avatar || null,
-        accent_color: member.accentColor || null,
-        roles: member.roles || [],
-        is_bot: member.isBot || false,
-        joined_at: member.joinedAt || null,
-        account_created: member.createdAt || null,
-        custom_status: member.customStatus || null,
-        connected_accounts: member.connectedAccounts || [],
-        tweet: member.activity?.tweet || 0,
-        art: member.activity?.art || 0,
-        total_messages: member.totalMessages || 0,
-        first_message_date: member.firstMessageDate || null,
-        last_message_date: member.lastMessageDate || null,
-        x_username: member.xUsername || null,
-        // Role Snapshots & Promotion
-        role_kamis: member.roleKamis || undefined, // undefined means do not touch existing value if not provided
-        role_jumat: member.roleJumat || undefined,
-        is_promoted: member.isPromoted || undefined
-    }));
+    // IMPORTANT: We must NOT include role_kamis/role_jumat/is_promoted if they are undefined
+    // because Supabase will convert "undefined" to NULL and overwrite existing data!
+    const records = activityData.map(member => {
+        const record = {
+            user_id: member.userId,
+            username: member.username,
+            display_name: member.displayName,
+            discriminator: member.discriminator || '0',
+            avatar_url: member.avatar || null,
+            accent_color: member.accentColor || null,
+            roles: member.roles || [],
+            is_bot: member.isBot || false,
+            joined_at: member.joinedAt || null,
+            account_created: member.createdAt || null,
+            custom_status: member.customStatus || null,
+            connected_accounts: member.connectedAccounts || [],
+            tweet: member.activity?.tweet || 0,
+            art: member.activity?.art || 0,
+            total_messages: member.totalMessages || 0,
+            first_message_date: member.firstMessageDate || null,
+            last_message_date: member.lastMessageDate || null,
+            x_username: member.xUsername || null
+        };
+
+        // Only add these fields if they have actual values (not undefined/null)
+        // This prevents Supabase from overwriting existing data with NULL
+        if (member.roleKamis !== undefined && member.roleKamis !== null) {
+            record.role_kamis = member.roleKamis;
+        }
+        if (member.roleJumat !== undefined && member.roleJumat !== null) {
+            record.role_jumat = member.roleJumat;
+        }
+        if (member.isPromoted !== undefined && member.isPromoted !== null) {
+            record.is_promoted = member.isPromoted;
+        }
+
+        return record;
+    });
 
     // Process in batches
     for (let i = 0; i < records.length; i += batchSize) {
