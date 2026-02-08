@@ -95,22 +95,53 @@ async function saveToSupabase(activityData) {
  * Get all members from Supabase
  * @returns {Array} - Array of member records
  */
+/**
+ * Get all members from Supabase (Handles pagination for >1000 records)
+ * @returns {Array} - Array of member records
+ */
 async function getMembersFromSupabase() {
     if (!supabase) {
         return [];
     }
 
-    const { data, error } = await supabase
-        .from('seismic_dc_user')
-        .select('*')
-        .order('total_messages', { ascending: false });
+    let allMembers = [];
+    let from = 0;
+    let step = 999; // Supabase limit is 1000 (0-999)
+    let more = true;
 
-    if (error) {
-        console.error('Error fetching from Supabase:', error.message);
-        return [];
+    console.log('📥 Fetching existing members from Supabase...');
+
+    while (more) {
+        const { data, error } = await supabase
+            .from('seismic_dc_user')
+            .select('*')
+            .order('total_messages', { ascending: false })
+            .range(from, from + step);
+
+        if (error) {
+            console.error(`Error fetching members (range ${from}-${from + step}):`, error.message);
+            // Break loop on error to process partial data at least
+            break;
+        }
+
+        if (data && data.length > 0) {
+            allMembers = allMembers.concat(data);
+            from += step + 1;
+
+            // If we got less than the step + 1 (meaning full page), we are done
+            if (data.length < 1000) {
+                more = false;
+            }
+
+            // Log progress for large datasets
+            process.stdout.write(`\r   Fetched ${allMembers.length} records...`);
+        } else {
+            more = false;
+        }
     }
 
-    return data;
+    console.log(`\n✅ Total members fetched: ${allMembers.length}`);
+    return allMembers;
 }
 
 /**
