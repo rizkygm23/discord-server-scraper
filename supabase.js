@@ -123,7 +123,8 @@ async function getMembersFromSupabase() {
 
     let allMembers = [];
     let from = 0;
-    let step = 999; // Supabase limit is 1000 (0-999)
+    // FETCH ALMOST ALL AT ONCE (Max 20k limit)
+    let step = 19999; // Fetch 20,000 records per batch (0-19999)
     let more = true;
 
     console.log('📥 Fetching existing members from Supabase...');
@@ -132,7 +133,10 @@ async function getMembersFromSupabase() {
         const { data, error } = await supabase
             .from('seismic_dc_user')
             .select('*')
+            // IMPORTANT: Must verify sorting is deterministic!
+            // Adding user_id as secondary sort ensures stable pagination
             .order('total_messages', { ascending: false })
+            .order('user_id', { ascending: true })
             .range(from, from + step);
 
         if (error) {
