@@ -128,6 +128,8 @@ async function runAnalysis() {
             if (dayOfWeek === 4) { // THURSDAY
                 console.log(`   📸 Snapshotting Thursday Role for ${member.username}: ${highestMag}`);
                 updates.roleKamis = highestMag;
+                // RESET promotion status for new week
+                updates.isPromoted = false;
             } else {
                 // PRESERVE existing Thursday role if it's not Thursday
                 // This prevents overwriting it with NULL during upserts
