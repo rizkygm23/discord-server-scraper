@@ -106,6 +106,11 @@ class MemberAnalytics {
     }
 
     loadCheckpoints() {
+        // DISABLING CHECKPOINTS AS REQUESTED
+        // Always return empty to force FULL SCAN every time.
+        return {};
+
+        /* 
         try {
             if (fs.existsSync(this.checkpointFile)) {
                 return JSON.parse(fs.readFileSync(this.checkpointFile, 'utf8'));
@@ -114,6 +119,7 @@ class MemberAnalytics {
             console.error('Error loading checkpoints:', err);
         }
         return {};
+        */
     }
 
     saveCheckpoints() {

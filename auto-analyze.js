@@ -113,38 +113,25 @@ async function runAnalysis() {
         console.log(`\n📅 Today is UTC Day: ${dayOfWeek} (0=Sun, 4=Thu, 5=Fri)`);
 
         // Enrich activity data with snapshot logic
-        // Enrich activity data with snapshot logic
         const enrichedData = activityData.map(member => {
             const highestMag = getHighestMagnitude(member.roles);
             const region = getRegionalRole(member.roles); // Detect regional role
             const existing = existingMap.get(member.userId);
 
             // ---------------------------------------------------------
-            // INCREMENTAL SCAN DATA ACCUMULATION
+            // FULL SCAN LOGIC (NO ACCUMULATION)
             // ---------------------------------------------------------
-            // structure from analytics.js:
-            // - member.activity.tweet (new count)
-            // - member.totalMessages (new count)
+            // We use the scraper result as the absolute truth for this run.
 
             // Map to DB columns (snake_case)
-            // Initialize with NEW counts
             member.tweet = member.activity.tweet || 0;
             member.art = member.activity.art || 0;
             // Note: analytics.js uses totalMessages (camel), DB uses total_messages (snake)
             member.total_messages = member.totalMessages || 0;
 
-            if (existing) {
-                // ADD existing DB counts to the NEW counts
-                member.tweet += (existing.tweet || 0);
-                member.art += (existing.art || 0);
-                member.total_messages += (existing.total_messages || 0);
-
-                // Preserve X Username if we didn't find a new one
-                if (!member.xUsername && existing.x_username) {
-                    member.xUsername = existing.x_username;
-                }
-            } else {
-                // New User: No accumulation needed.
+            // Preserve X Username if missing in scan but exists in DB
+            if (!member.xUsername && existing && existing.x_username) {
+                member.xUsername = existing.x_username;
             }
 
             const updates = { ...member };
@@ -241,5 +228,5 @@ const scheduleNext = () => {
     }, msUntilNext);
 };
 
-// Start the engine
+// Start the loop
 startLoop();
