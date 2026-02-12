@@ -268,11 +268,65 @@ async function checkMissingSnapshots() {
     return missingUsers.length;
 }
 
+/**
+ * Sanitize Promotion Status (Fix False Positives)
+ * Logic: If role_kamis >= role_jumat, is_promoted MUST be FALSE.
+ */
+async function sanitizePromotions() {
+    if (!supabase) return;
+
+    console.log('\n🧹 Sanitizing promotion data (Removing false positives)...');
+
+    // 1. Get all users who are currently marked as "Promoted"
+    const { data: likelyFalse, error } = await supabase
+        .from('seismic_dc_user')
+        .select('user_id, username, role_kamis, role_jumat')
+        .eq('is_promoted', true);
+
+    if (error || !likelyFalse) {
+        console.error('Error fetching promotion data:', error?.message);
+        return;
+    }
+
+    // 2. Filter locally: Find impostors where Kamis >= Jumat
+    const impostors = likelyFalse.filter(u => {
+        // If snapshot missing, we can't be sure, so set false to be safe
+        if (u.role_kamis == null || u.role_jumat == null) return true;
+
+        // Logic: If Kamis >= Jumat, there is NO growth. So is_promoted should be false.
+        return Number(u.role_kamis) >= Number(u.role_jumat);
+    });
+
+    if (impostors.length === 0) {
+        console.log('   ✨ No false promotions found. Data is clean.');
+        return;
+    }
+
+    console.log(`   ⚠️ Found ${impostors.length} false promotions. Fixing...`);
+
+    // 3. Fix them in batches
+    // We update is_promoted = FALSE for these specific User IDs
+    const impostorIds = impostors.map(u => u.user_id);
+
+    const { error: updateError } = await supabase
+        .from('seismic_dc_user')
+        .update({ is_promoted: false })
+        .in('user_id', impostorIds);
+
+    if (updateError) {
+        console.error('   ❌ Failed to sanitize promotions:', updateError.message);
+    } else {
+        console.log(`   ✅ Successfully cleaned ${impostorIds.length} false records.`);
+        impostors.slice(0, 3).forEach(u => console.log(`      - Fixed: ${u.username} (Thu: ${u.role_kamis} == Fri: ${u.role_jumat})`));
+    }
+}
+
 module.exports = {
     supabase,
     saveToSupabase,
     getMembersFromSupabase,
     getLeaderboard,
     testConnection,
-    checkMissingSnapshots
+    checkMissingSnapshots,
+    sanitizePromotions
 };

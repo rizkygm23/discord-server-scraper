@@ -1,5 +1,5 @@
 const MemberAnalytics = require('./analytics');
-const { saveToSupabase, getMembersFromSupabase, testConnection, checkMissingSnapshots } = require('./supabase');
+const { saveToSupabase, getMembersFromSupabase, testConnection, checkMissingSnapshots, sanitizePromotions } = require('./supabase');
 const config = require('./config');
 
 // Hardcoded Channel Configuration (copied from analyze-members.js)
@@ -130,13 +130,9 @@ async function runAnalysis() {
                 updates.roleKamis = highestMag;
                 // RESET promotion status for new week
                 updates.isPromoted = false;
-            } else {
-                // PRESERVE existing Thursday role if it's not Thursday
-                // This prevents overwriting it with NULL during upserts
-                if (existing && existing.role_kamis != null) {
-                    updates.roleKamis = existing.role_kamis;
-                }
             }
+            // ELSE: Do NOTHING. Leave updates.roleKamis undefined. 
+            // supabase.js will ignore undefined fields, so the DB column is UNTOUCHED.
 
             if (dayOfWeek === 5) { // FRIDAY
                 console.log(`   📸 Snapshotting Friday Role for ${member.username}: ${highestMag}`);
@@ -155,13 +151,9 @@ async function runAnalysis() {
                         updates.isPromoted = false;
                     }
                 }
-            } else {
-                // PRESERVE existing Friday role & promotion status on other days
-                if (existing) {
-                    if (existing.role_jumat != null) updates.roleJumat = existing.role_jumat;
-                    if (existing.is_promoted != null) updates.isPromoted = existing.is_promoted;
-                }
             }
+            // ELSE: Do NOTHING. Leave roleJumat & isPromoted undefined.
+            // DB columns remain strictly untouched.
 
             return updates;
         });
@@ -178,6 +170,10 @@ async function runAnalysis() {
             console.log('\n🔍 Running Data Integrity Check...');
             await checkMissingSnapshots();
         }
+
+        // 8. Final Sanitize (Fix False Promotions)
+        // Ensure consistency: role_kamis == role_jumat => is_promoted = FALSE
+        await sanitizePromotions();
 
         const duration = Date.now() - startTime;
         const minutes = Math.floor(duration / 60000);
