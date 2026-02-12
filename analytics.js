@@ -97,9 +97,31 @@ class MemberAnalytics {
 
         // Store activity data per member
         this.memberActivity = new Map();
-
         // Track channel statistics
         this.channelStats = [];
+
+        // Checkpoint file path
+        this.checkpointFile = path.join(__dirname, 'channel_checkpoints.json');
+        this.checkpoints = this.loadCheckpoints();
+    }
+
+    loadCheckpoints() {
+        try {
+            if (fs.existsSync(this.checkpointFile)) {
+                return JSON.parse(fs.readFileSync(this.checkpointFile, 'utf8'));
+            }
+        } catch (err) {
+            console.error('Error loading checkpoints:', err);
+        }
+        return {};
+    }
+
+    saveCheckpoints() {
+        try {
+            fs.writeFileSync(this.checkpointFile, JSON.stringify(this.checkpoints, null, 2));
+        } catch (err) {
+            console.error('Error saving checkpoints:', err);
+        }
     }
 
     async initialize() {
@@ -471,10 +493,22 @@ class MemberAnalytics {
             console.log(`\n  📨 #${channel.name}`);
 
             let messages = [];
-            let lastId;
+            let lastId; // For pagination (fetching older messages)
             let fetchedCount = 0;
             let hitLimit = false;
             let noMoreMessages = false;
+
+            // INCREMENTAL SCAN LOGIC
+            // Get the last message ID we processed for this channel
+            const lastCheckpointId = this.checkpoints[channelId];
+            let newCheckpointId = null; // To store the newest message ID found in this run
+            let reachedCheckpoint = false;
+
+            if (lastCheckpointId) {
+                console.log(`   📍 Resuming from checkpoint: ${lastCheckpointId} (Incremental Scan)`);
+            } else {
+                console.log(`   🆕 No checkpoint found. Performing FULL scan.`);
+            }
 
             // Reset progress timer
             progress.reset();
@@ -492,7 +526,19 @@ class MemberAnalytics {
                 }
 
                 // Include ALL messages (bots included)
-                fetchedMessages.forEach(msg => {
+                // Include ALL messages (bots included)
+                for (const msg of fetchedMessages.values()) {
+                    // Capture the very first (newest) message ID to save as next checkpoint
+                    if (!newCheckpointId) {
+                        newCheckpointId = msg.id;
+                    }
+
+                    // CHECKPOINT STOP CONDITION
+                    if (lastCheckpointId && BigInt(msg.id) <= BigInt(lastCheckpointId)) {
+                        reachedCheckpoint = true;
+                        break;
+                    }
+
                     messages.push({
                         authorId: msg.author.id,
                         authorUsername: msg.author.username,
@@ -502,10 +548,19 @@ class MemberAnalytics {
                         attachmentCount: msg.attachments.size,
                         createdAt: msg.createdAt
                     });
-                });
+                }
 
-                lastId = fetchedMessages.last()?.id;
                 fetchedCount += fetchedMessages.size;
+
+                // Stop fetching if we reached old messages
+                if (reachedCheckpoint) {
+                    noMoreMessages = true;
+                    // Dont break here, we need to update progress one last time
+                    // But set lastId to null to break loop
+                    lastId = null;
+                } else {
+                    lastId = fetchedMessages.last()?.id;
+                }
 
                 // Animated progress display
                 const spinner = progress.getSpinner();
@@ -524,6 +579,8 @@ class MemberAnalytics {
 
                 // Small delay to avoid rate limiting
                 await new Promise(r => setTimeout(r, 100));
+
+                if (reachedCheckpoint || noMoreMessages) break;
 
             } while (true);
 
@@ -545,6 +602,12 @@ class MemberAnalytics {
             const elapsed = progress.formatTime(Date.now() - progress.startTime);
             const limitStatus = hitLimit ? '⚠️  HIT LIMIT' : '✅ Complete';
             progress.finish(`     ✓ Done: ${totalFormatted} messages | Time: ${elapsed} | ${limitStatus}`);
+
+            // Save the NEW checkpoint (if we found any messages)
+            if (newCheckpointId) {
+                this.checkpoints[channelId] = newCheckpointId;
+                this.saveCheckpoints();
+            }
 
             // Count messages per user for this category
             for (const msg of messages) {
