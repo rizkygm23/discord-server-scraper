@@ -32,12 +32,18 @@ const supabase = supabaseUrl && supabaseKey
     : null;
 
 // ============================================
+// SIMULATION / TEST MODE
+// ============================================
+// Set to true to test with only ONE user safely
+const SIMULATION_MODE = false;
+const TEST_USER = 'rizzgm'; // Username to filter for testing
+
+// ============================================
 // SAVE CHAT DATA TO SUPABASE
 // ============================================
-// IMPORTANT: This function ONLY updates the 4 chat columns.
-// It does NOT touch: tweet, art, total_messages, roles, role_kamis,
-// role_jumat, is_promoted, x_username, region, or any other column.
-// This makes it safe to run in parallel with auto-analyze.js.
+// IMPORTANT: This function ONLY updates the 4 chat columns + Basic Metadata.
+// It DOES include username/display_name/roles to satisfy Database constraints for NEW users.
+// It does NOT touch: tweet, art, total_messages, role_kamis, role_jumat, is_promoted, etc.
 async function saveChatToSupabase(activityData) {
     if (!supabase) {
         console.log('⚠️ Supabase not configured, skipping chat data save.');
@@ -50,9 +56,18 @@ async function saveChatToSupabase(activityData) {
     let errorCount = 0;
     const batchSize = 100;
 
-    // Transform data: ONLY include user_id + the 4 chat columns
+    // Transform data: 
+    // We MUST include username/display_name/roles/is_bot to allow NEW users to be created so "NOT NULL" constraints don't fail.
+    // For EXISTING users, this will update their name/roles to the latest, but keeps their stats intact.
     const records = activityData.map(member => ({
         user_id: member.userId,
+        username: member.username,                 // REQUIRED by DB
+        display_name: member.displayName,          // Good to have
+        discriminator: member.discriminator || '0',
+        roles: member.roles || [],                 // Useful to keep updated
+        is_bot: member.isBot || false,
+
+        // The 4 Chat Columns we actually want to update
         general_chat: member.activity.general || 0,
         magnitude_chat: member.activity.magnitude || 0,
         devnet_chat: member.activity.devnet || 0,
@@ -64,9 +79,7 @@ async function saveChatToSupabase(activityData) {
         const batch = records.slice(i, i + batchSize);
 
         try {
-            // Upsert ONLY on the chat columns
-            // onConflict: 'user_id' means it will UPDATE existing rows
-            // Since we only include chat columns, other columns are UNTOUCHED
+            // Upsert will insert new users or update existing ones
             const { data, error } = await supabase
                 .from('seismic_dc_user')
                 .upsert(batch, {
@@ -118,10 +131,33 @@ async function runChatAnalysis() {
         await analytics.getAllMembers();
 
         // 2. Analyze Chat Activity across all 4 chat channels
-        const activityData = await analytics.analyzeActivity(CHAT_CHANNEL_CATEGORIES, Infinity);
+        let activityData = await analytics.analyzeActivity(CHAT_CHANNEL_CATEGORIES, Infinity);
 
-        console.log(`\n📊 Chat Analysis Results:`);
-        console.log(`   Total active chatters: ${activityData.length}`);
+        console.log(`\n📊 Chat Analysis Results (Raw):`);
+        console.log(`   Total active chatters found: ${activityData.length}`);
+
+        // ============================================
+        // SIMULATION MODE FILTER
+        // ============================================
+        if (SIMULATION_MODE) {
+            console.log(`\n🧪 SIMULATION MODE ACTIVE`);
+            console.log(`   🎯 Filtering exclusively for user: '${TEST_USER}'`);
+
+            activityData = activityData.filter(m =>
+                m.username.toLowerCase().includes(TEST_USER.toLowerCase()) ||
+                m.displayName.toLowerCase().includes(TEST_USER.toLowerCase())
+            );
+
+            if (activityData.length === 0) {
+                console.log(`   ❌ User '${TEST_USER}' not found in any chat channels!`);
+                console.log(`      Cannot proceed with test save.`);
+                return;
+            }
+
+            console.log(`   ✅ User found! Proceeding to save ONLY this user.`);
+        }
+
+        console.log(`   Final count to update: ${activityData.length}`);
 
         // Count per category
         let generalCount = 0, magnitudeCount = 0, devnetCount = 0, reportCount = 0;
