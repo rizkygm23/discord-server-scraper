@@ -128,45 +128,16 @@ async function runChatAnalysis() {
         await analytics.getAllMembers();
 
         // =========================================================
-        // STEP 1: PRE-FLIGHT SIMULATION (Test Save 50 Messages)
-        // =========================================================
-        console.log('\n🧪 STARTING PRE-FLIGHT CHECK (Simulation)...');
-        console.log('   Scanning first 50 messages to verify database saving...');
-
-        // Create a temporary config with just ONE channel for speed
-        const testConfig = {};
-        const firstCategory = Object.keys(CHAT_CHANNEL_CATEGORIES)[0];
-        testConfig[firstCategory] = CHAT_CHANNEL_CATEGORIES[firstCategory];
-
-        // Run with small limit
-        const testActivityData = await analytics.analyzeActivity(testConfig, 50);
-
-        if (testActivityData.length > 0) {
-            console.log(`   Found ${testActivityData.length} active users in test batch.`);
-
-            // Perform TEST SAVE
-            const testResult = await saveChatToSupabase(testActivityData);
-
-            if (testResult.errors > 0) {
-                console.error('\n❌ PRE-FLIGHT CHECK FAILED!');
-                console.error('   Database save returned errors. Aborting full scan to prevent wasting time.');
-                console.error('   Please fix the database/code issues (e.g. check "username" or constraints).');
-                return; // STOP HERE
-            }
-
-            console.log('   ✅ PRE-FLIGHT CHECK PASSED! Database save works correctly.');
-        } else {
-            console.warn('   ⚠️ Test batch found 0 messages. Skipping save test, but proceeding with caution.');
-        }
-
-        // =========================================================
-        // STEP 2: FULL SCAN (Infinity)
-        // =========================================================
         console.log('\n🚀 PROCEEDING TO FULL SCAN (Limit: Infinity)...');
         console.log('   (Counters will be reset and recalculated from scratch)');
 
         // Run full analysis
-        // Note: analyzeActivity automatically resets counters internally
+        // =========================================================
+        // FULL SCAN (Limit: Infinity)
+        // =========================================================
+        console.log('\n🚀 PROCEEDING TO FULL SCAN (Limit: Infinity)...');
+
+        // Run full analysis
         const activityData = await analytics.analyzeActivity(CHAT_CHANNEL_CATEGORIES, Infinity);
 
         console.log(`\n📊 Chat Analysis Results (Full Scan):`);
