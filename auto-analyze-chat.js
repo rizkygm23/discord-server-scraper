@@ -109,8 +109,7 @@ async function saveChatToSupabase(activityData) {
 // ============================================
 async function runChatAnalysis() {
     console.log(`\n🚀 Starting CHAT Analysis at ${new Date().toISOString()}`);
-    console.log('   📋 Mode: Chat Channels Only (general, magnitude, devnet, report)');
-    console.log('   ⚠️  This will NOT touch tweet/art/total_messages/role columns\n');
+    console.log('   📋 Mode: Chat Channels Only');
 
     // 0. Test Database Connection
     const isDbConnected = await testConnection();
@@ -120,8 +119,6 @@ async function runChatAnalysis() {
     }
 
     const startTime = Date.now();
-
-    // Use MemberAnalytics with chat channel config
     const analytics = new MemberAnalytics(CHAT_CHANNEL_CATEGORIES);
 
     try {
@@ -130,34 +127,50 @@ async function runChatAnalysis() {
         // 1. Fetch members (needed for role data)
         await analytics.getAllMembers();
 
-        // 2. Analyze Chat Activity across all 4 chat channels
-        let activityData = await analytics.analyzeActivity(CHAT_CHANNEL_CATEGORIES, Infinity);
+        // =========================================================
+        // STEP 1: PRE-FLIGHT SIMULATION (Test Save 50 Messages)
+        // =========================================================
+        console.log('\n🧪 STARTING PRE-FLIGHT CHECK (Simulation)...');
+        console.log('   Scanning first 50 messages to verify database saving...');
 
-        console.log(`\n📊 Chat Analysis Results (Raw):`);
-        console.log(`   Total active chatters found: ${activityData.length}`);
+        // Create a temporary config with just ONE channel for speed
+        const testConfig = {};
+        const firstCategory = Object.keys(CHAT_CHANNEL_CATEGORIES)[0];
+        testConfig[firstCategory] = CHAT_CHANNEL_CATEGORIES[firstCategory];
 
-        // ============================================
-        // SIMULATION MODE FILTER
-        // ============================================
-        if (SIMULATION_MODE) {
-            console.log(`\n🧪 SIMULATION MODE ACTIVE`);
-            console.log(`   🎯 Filtering exclusively for user: '${TEST_USER}'`);
+        // Run with small limit
+        const testActivityData = await analytics.analyzeActivity(testConfig, 50);
 
-            activityData = activityData.filter(m =>
-                m.username.toLowerCase().includes(TEST_USER.toLowerCase()) ||
-                m.displayName.toLowerCase().includes(TEST_USER.toLowerCase())
-            );
+        if (testActivityData.length > 0) {
+            console.log(`   Found ${testActivityData.length} active users in test batch.`);
 
-            if (activityData.length === 0) {
-                console.log(`   ❌ User '${TEST_USER}' not found in any chat channels!`);
-                console.log(`      Cannot proceed with test save.`);
-                return;
+            // Perform TEST SAVE
+            const testResult = await saveChatToSupabase(testActivityData);
+
+            if (testResult.errors > 0) {
+                console.error('\n❌ PRE-FLIGHT CHECK FAILED!');
+                console.error('   Database save returned errors. Aborting full scan to prevent wasting time.');
+                console.error('   Please fix the database/code issues (e.g. check "username" or constraints).');
+                return; // STOP HERE
             }
 
-            console.log(`   ✅ User found! Proceeding to save ONLY this user.`);
+            console.log('   ✅ PRE-FLIGHT CHECK PASSED! Database save works correctly.');
+        } else {
+            console.warn('   ⚠️ Test batch found 0 messages. Skipping save test, but proceeding with caution.');
         }
 
-        console.log(`   Final count to update: ${activityData.length}`);
+        // =========================================================
+        // STEP 2: FULL SCAN (Infinity)
+        // =========================================================
+        console.log('\n🚀 PROCEEDING TO FULL SCAN (Limit: Infinity)...');
+        console.log('   (Counters will be reset and recalculated from scratch)');
+
+        // Run full analysis
+        // Note: analyzeActivity automatically resets counters internally
+        const activityData = await analytics.analyzeActivity(CHAT_CHANNEL_CATEGORIES, Infinity);
+
+        console.log(`\n📊 Chat Analysis Results (Full Scan):`);
+        console.log(`   Total active chatters: ${activityData.length}`);
 
         // Count per category
         let generalCount = 0, magnitudeCount = 0, devnetCount = 0, reportCount = 0;
@@ -172,7 +185,7 @@ async function runChatAnalysis() {
         console.log(`   Devnet chatters:    ${devnetCount}`);
         console.log(`   Report chatters:    ${reportCount}`);
 
-        // 3. Save ONLY chat data to Supabase (safe, no column conflicts)
+        // 3. Save FULL chat data
         await saveChatToSupabase(activityData);
 
         const duration = Date.now() - startTime;
