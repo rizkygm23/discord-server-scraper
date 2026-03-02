@@ -67,10 +67,36 @@ function getRegionalRole(roles) {
     return null;
 }
 
-// Helper to calculate time until next run (5 minutes cooldown)
+// Helper to calculate time until next run based on schedule (07:00 WIB daily, 17:00 WIB on Fridays)
 function getTimeUntilNextRun() {
-    const COOLDOWN_MINUTES = 5;
-    return COOLDOWN_MINUTES * 60 * 1000;
+    const now = Date.now();
+    // Offset for WIB (UTC+7) is 7 hours
+    const WIB_OFFSET_MS = 7 * 3600 * 1000;
+
+    // Check up to the next 7 days
+    for (let i = 0; i <= 7; i++) {
+        // Calculate the Date components for today + i days in WIB
+        const evalTimeMs = now + (i * 24 * 3600 * 1000) + WIB_OFFSET_MS;
+        const wibObj = new Date(evalTimeMs);
+
+        const wibYear = wibObj.getUTCFullYear();
+        const wibMonth = wibObj.getUTCMonth();
+        const wibDate = wibObj.getUTCDate();
+        const wibDay = wibObj.getUTCDay(); // 0=Sun, 1=Mon... 5=Fri
+
+        // Target is 17:00 WIB on Friday, 07:00 WIB on other days
+        const targetHourWIB = (wibDay === 5) ? 17 : 7;
+
+        // Convert target back to UTC ms (subtract 7 hours)
+        const targetMs = Date.UTC(wibYear, wibMonth, wibDate, targetHourWIB - 7, 0, 0, 0);
+
+        if (targetMs > now) {
+            return targetMs - now;
+        }
+    }
+
+    // Fallback: 24 hours
+    return 24 * 3600 * 1000;
 }
 
 async function runAnalysis() {
@@ -208,10 +234,12 @@ async function runAnalysis() {
 // --- Main Loop ---
 async function startLoop() {
     console.log('🤖 Discord Scraper Automation Bot Started');
-    console.log('   Running in continuous mode (5 minutes cooldown)');
+    console.log('   Running in scheduled mode (Daily at 07:00 WIB, Fridays at 17:00 WIB)');
 
-    // Run immediately on start
+    // Run immediately on start 
+    // (Jika tidak ingin langsung jalan saat di-start, baris ini bisa di-comment)
     await runAnalysis();
+
     scheduleNext();
 }
 
@@ -219,8 +247,12 @@ const scheduleNext = () => {
     const msUntilNext = getTimeUntilNextRun();
     const nextDate = new Date(Date.now() + msUntilNext);
 
-    console.log(`\n💤 Sleeping for ${(msUntilNext / 1000 / 60).toFixed(1)} minutes`);
-    console.log(`⏰ Next run scheduled for: ${nextDate.toUTCString()}`);
+    // Format WIB string for display (UTC+7)
+    const wibDate = new Date(nextDate.getTime() + 7 * 3600 * 1000);
+    const wibStr = wibDate.toISOString().replace('T', ' ').substring(0, 16) + ' WIB';
+
+    console.log(`\n💤 Sleeping for ${(msUntilNext / 1000 / 3600).toFixed(2)} hours`);
+    console.log(`⏰ Next run scheduled for: ${nextDate.toUTCString()} (${wibStr})`);
 
     setTimeout(async () => {
         await runAnalysis();
