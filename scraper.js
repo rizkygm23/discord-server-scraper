@@ -139,8 +139,8 @@ class DiscordScraper {
           console.log(`    Processing thread (${threadCount}/${Math.min(allThreads.length, limit)}): ${thread.name}`);
 
           try {
-            // Berikan jeda rate limiting sebelum menarik pesan thread (300-700ms)
-            const randomDelay = Math.floor(Math.random() * 400) + 300;
+            // Berikan jeda rate limiting sebelum menarik pesan thread (sekitar 50 pesan/detik: 1500ms - 2500ms)
+            const randomDelay = Math.floor(Math.random() * 1000) + 1500;
             await new Promise(r => setTimeout(r, randomDelay));
 
             const threadMessages = await thread.messages.fetch({ limit: 100 });
@@ -229,8 +229,8 @@ class DiscordScraper {
             break;
           }
 
-          // Jeda acak untuk fetching pesan channel (3x lebih lambat: 300ms - 700ms) untuk menghindari deteksi anti-bot
-          const randomDelay = Math.floor(Math.random() * 400) + 300;
+          // Jeda acak untuk fetching pesan channel (sekitar 50 pesan/detik: 1500ms - 2500ms)
+          const randomDelay = Math.floor(Math.random() * 1000) + 1500;
           await new Promise(r => setTimeout(r, randomDelay));
 
         } while (fetchedMessages.size === 100);

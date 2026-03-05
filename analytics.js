@@ -584,8 +584,8 @@ class MemberAnalytics {
                     break;
                 }
 
-                // Jeda acak untuk fetching pesan (3x lebih lambat: 300ms - 700ms) untuk menghindari deteksi anti-bot
-                const randomDelay = Math.floor(Math.random() * 400) + 300;
+                // Jeda acak untuk fetching pesan (sekitar 50 pesan/detik: 1500ms - 2500ms)
+                const randomDelay = Math.floor(Math.random() * 1000) + 1500;
                 await new Promise(r => setTimeout(r, randomDelay));
 
                 if (reachedCheckpoint || noMoreMessages) break;
