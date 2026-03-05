@@ -139,6 +139,10 @@ class DiscordScraper {
           console.log(`    Processing thread (${threadCount}/${Math.min(allThreads.length, limit)}): ${thread.name}`);
 
           try {
+            // Berikan jeda rate limiting sebelum menarik pesan thread (300-700ms)
+            const randomDelay = Math.floor(Math.random() * 400) + 300;
+            await new Promise(r => setTimeout(r, randomDelay));
+
             const threadMessages = await thread.messages.fetch({ limit: 100 });
 
             threadMessages.forEach(msg => {
@@ -181,11 +185,11 @@ class DiscordScraper {
         do {
           const options = { limit: 100 };
           if (lastId) options.before = lastId;
-          
+
           fetchedMessages = await channel.messages.fetch(options);
-          
+
           if (fetchedMessages.size === 0) break;
-          
+
           fetchedMessages.forEach(msg => {
             messages.push({
               id: msg.id,
@@ -216,14 +220,19 @@ class DiscordScraper {
               createdAt: msg.createdAt
             });
           });
-          
+
           lastId = fetchedMessages.last()?.id;
-          
+
           // 메시지 수 제한 확인
           if (messages.length >= limit) {
             messages.splice(limit);
             break;
           }
+
+          // Jeda acak untuk fetching pesan channel (3x lebih lambat: 300ms - 700ms) untuk menghindari deteksi anti-bot
+          const randomDelay = Math.floor(Math.random() * 400) + 300;
+          await new Promise(r => setTimeout(r, randomDelay));
+
         } while (fetchedMessages.size === 100);
       }
     } catch (error) {
@@ -259,7 +268,7 @@ class DiscordScraper {
           const outputPath = path.join(channelMediaDir, `${message.id}_embed_${filename}`);
           downloadPromises.push(utils.downloadFile(embed.image, outputPath));
         }
-        
+
         if (embed.thumbnail) {
           const filename = utils.getFilenameFromUrl(embed.thumbnail);
           const outputPath = path.join(channelMediaDir, `${message.id}_thumbnail_${filename}`);
@@ -279,64 +288,64 @@ class DiscordScraper {
   async scrapeServer(messageLimit = 1000) {
     try {
       console.log('서버 데이터 수집 시작...');
-      
+
       // 서버 정보 가져오기
       const serverInfo = await this.getServerInfo();
       console.log(`서버: ${serverInfo.name} (${serverInfo.id})`);
-      
+
       // 서버 정보 저장
       await utils.saveJsonFile(serverInfo, path.join(this.outputDir, 'server_info.json'));
-      
+
       // 서버 아이콘 다운로드
       if (serverInfo.icon) {
         await utils.downloadFile(serverInfo.icon, path.join(this.outputDir, 'server_icon.png'));
       }
-      
+
       // 채널 목록 가져오기
       const channels = await this.getChannels();
       console.log(`텍스트 채널 ${channels.length}개 발견`);
-      
+
       // 채널 정보 저장
       await utils.saveJsonFile(channels, path.join(this.outputDir, 'channels.json'));
-      
+
       // 각 채널의 메시지 수집
       for (const channel of channels) {
         console.log(`채널 처리 중: ${channel.name} (${channel.id})`);
-        
+
         // 채널 디렉토리 생성
         const channelDir = path.join(this.outputDir, utils.sanitizeFilename(channel.name));
         await utils.ensureDir(channelDir);
-        
+
         // 메시지 가져오기
         const messages = await this.getMessages(channel.id, messageLimit);
         console.log(`  ${messages.length}개 메시지 수집됨`);
-        
+
         // 메시지 저장
         await utils.saveJsonFile(messages, path.join(channelDir, 'messages.json'));
-        
+
         // 메시지 텍스트 저장 (읽기 쉬운 형식)
-        const textContent = messages.map(msg => 
+        const textContent = messages.map(msg =>
           `[${new Date(msg.createdAt).toLocaleString()}] ${msg.author.username}#${msg.author.discriminator}: ${msg.content}`
         ).join('\n');
         await utils.saveTextFile(textContent, path.join(channelDir, 'messages.txt'));
-        
+
         // 미디어 다운로드
         await this.downloadMedia(messages, channel.name);
         console.log(`  미디어 다운로드 완료`);
-        
+
         // URL 처리 및 메가 파일 다운로드
         console.log(`  URL 처리 및 메가 파일 다운로드 시작...`);
         const urlStats = await utils.processMessageUrls(messages, channelDir);
         console.log(`  URL 처리 완료: 총 ${urlStats.total}개 URL (메가: ${urlStats.mega}개, 기타: ${urlStats.other}개)`);
       }
-      
+
       console.log('서버 데이터 수집 완료!');
       console.log(`모든 데이터가 ${this.outputDir} 디렉토리에 저장되었습니다.`);
     } catch (error) {
       console.error('서버 데이터 수집 중 오류 발생:', error);
     }
   }
-  
+
   /**
    * 특정 채널만 데이터 수집
    * @param {Array<string>} channelIds 수집할 채널 ID 배열
@@ -347,55 +356,55 @@ class DiscordScraper {
       if (!Array.isArray(channelIds) || channelIds.length === 0) {
         throw new Error('채널 ID 배열이 비어 있습니다. 최소 하나 이상의 채널 ID를 지정하세요.');
       }
-      
+
       console.log(`특정 채널 데이터 수집 시작... (${channelIds.length}개 채널)`);
-      
+
       // 서버 정보 가져오기
       const serverInfo = await this.getServerInfo();
       console.log(`서버: ${serverInfo.name} (${serverInfo.id})`);
-      
+
       // 서버 정보 저장
       await utils.saveJsonFile(serverInfo, path.join(this.outputDir, 'server_info.json'));
-      
+
       // 서버 아이콘 다운로드
       if (serverInfo.icon) {
         await utils.downloadFile(serverInfo.icon, path.join(this.outputDir, 'server_icon.png'));
       }
-      
+
       // 직접 채널 처리
       for (const channelId of channelIds) {
         try {
           // 채널 정보 가져오기
           const channel = await this.client.channels.fetch(channelId);
-          
+
           if (!channel) {
             console.error(`채널 ID ${channelId}를 찾을 수 없습니다.`);
             continue;
           }
-          
+
           console.log(`채널 처리 중: ${channel.name} (${channel.id})`);
-          
+
           // 채널 디렉토리 생성
           const channelDir = path.join(this.outputDir, utils.sanitizeFilename(channel.name));
           await utils.ensureDir(channelDir);
-          
+
           // 메시지 가져오기
           const messages = await this.getMessages(channel.id, messageLimit);
           console.log(`  ${messages.length}개 메시지 수집됨`);
-          
+
           // 메시지 저장
           await utils.saveJsonFile(messages, path.join(channelDir, 'messages.json'));
-          
+
           // 메시지 텍스트 저장 (읽기 쉬운 형식)
-          const textContent = messages.map(msg => 
+          const textContent = messages.map(msg =>
             `[${new Date(msg.createdAt).toLocaleString()}] ${msg.author.username}#${msg.author.discriminator}: ${msg.content}`
           ).join('\n');
           await utils.saveTextFile(textContent, path.join(channelDir, 'messages.txt'));
-          
+
           // 미디어 다운로드
           await this.downloadMedia(messages, channel.name);
           console.log(`  미디어 다운로드 완료`);
-          
+
           // URL 처리 및 메가 파일 다운로드
           console.log(`  URL 처리 및 메가 파일 다운로드 시작...`);
           const urlStats = await utils.processMessageUrls(messages, channelDir);
@@ -404,7 +413,7 @@ class DiscordScraper {
           console.error(`채널 ID ${channelId} 처리 중 오류 발생:`, channelError.message);
         }
       }
-      
+
       console.log('특정 채널 데이터 수집 완료!');
       console.log(`모든 데이터가 ${this.outputDir} 디렉토리에 저장되었습니다.`);
     } catch (error) {

@@ -474,8 +474,9 @@ class MemberAnalytics {
                 failCount++;
             }
 
-            // Small delay to avoid rate limiting
-            await new Promise(r => setTimeout(r, 50));
+            // Jeda acak untuk rate limiting (sekitar 3x lebih lambat: 150ms - 350ms)
+            const randomDelay = Math.floor(Math.random() * 200) + 150;
+            await new Promise(r => setTimeout(r, randomDelay));
         }
 
         const elapsed = progress.formatTime(Date.now() - progress.startTime);
@@ -583,8 +584,9 @@ class MemberAnalytics {
                     break;
                 }
 
-                // Small delay to avoid rate limiting
-                await new Promise(r => setTimeout(r, 100));
+                // Jeda acak untuk fetching pesan (3x lebih lambat: 300ms - 700ms) untuk menghindari deteksi anti-bot
+                const randomDelay = Math.floor(Math.random() * 400) + 300;
+                await new Promise(r => setTimeout(r, randomDelay));
 
                 if (reachedCheckpoint || noMoreMessages) break;
 
