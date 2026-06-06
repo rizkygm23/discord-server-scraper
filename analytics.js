@@ -81,11 +81,15 @@ const progress = new TerminalProgress();
  * Tracks member activity across different channel categories
  */
 class MemberAnalytics {
-    constructor(channelConfig = {}) {
+    constructor(channelConfig = {}, options = {}) {
         this.client = new Client({
             checkUpdate: false,
         });
-        this.outputDir = config.outputDir;
+        this.serverId = options.serverId || config.serverId;
+        this.projectKey = options.projectKey || 'default';
+        this.outputDir = options.outputDir || config.outputDir;
+        this.stateDir = options.stateDir || __dirname;
+        this.legacyStateDir = options.legacyStateDir || __dirname;
         this.initialized = false;
 
         // Channel configuration for tracking
@@ -101,32 +105,322 @@ class MemberAnalytics {
         this.channelStats = [];
 
         // Checkpoint file path
-        this.checkpointFile = path.join(__dirname, 'channel_checkpoints.json');
+        this.checkpointFile = path.join(this.stateDir, 'channel_checkpoints.json');
+
+        // Directory for per-channel checkpoint data files
+        this.checkpointDataDir = this.stateDir;
+
+        // Persistent cache for users resolved by refetchMissingMembers()
+        this.refetchCacheFile = path.join(this.stateDir, 'member_refetch_cache.json');
+
+        fs.ensureDirSync(this.stateDir);
+        this.migrateLegacyStateFiles();
+
         this.checkpoints = this.loadCheckpoints();
+        this.refetchCache = this.loadRefetchCache();
+        this.refetchCacheDirty = false;
+        this.refetchCacheHits = 0;
     }
 
     loadCheckpoints() {
-        // DISABLING CHECKPOINTS AS REQUESTED
-        // Always return empty to force FULL SCAN every time.
-        return {};
-
-        /* 
         try {
             if (fs.existsSync(this.checkpointFile)) {
-                return JSON.parse(fs.readFileSync(this.checkpointFile, 'utf8'));
+                const content = fs.readFileSync(this.checkpointFile, 'utf8').trim();
+                if (content) {
+                    const data = JSON.parse(content);
+                    console.log(`   📍 Loaded checkpoints for ${Object.keys(data).length} channels`);
+                    return data;
+                }
             }
         } catch (err) {
             console.error('Error loading checkpoints:', err);
         }
         return {};
-        */
     }
 
     saveCheckpoints() {
         try {
+            fs.ensureDirSync(this.stateDir);
             fs.writeFileSync(this.checkpointFile, JSON.stringify(this.checkpoints, null, 2));
         } catch (err) {
             console.error('Error saving checkpoints:', err);
+        }
+    }
+
+    migrateLegacyStateFiles() {
+        try {
+            if (!this.stateDir || this.stateDir === this.legacyStateDir) {
+                return;
+            }
+
+            const legacyCheckpointFile = path.join(this.legacyStateDir, 'channel_checkpoints.json');
+            if (!fs.existsSync(this.checkpointFile) && fs.existsSync(legacyCheckpointFile)) {
+                fs.copyFileSync(legacyCheckpointFile, this.checkpointFile);
+                console.log(`   Migrated legacy checkpoint file to ${this.checkpointFile}`);
+            }
+
+            const legacyCacheFile = path.join(this.legacyStateDir, 'member_refetch_cache.json');
+            if (!fs.existsSync(this.refetchCacheFile) && fs.existsSync(legacyCacheFile)) {
+                fs.copyFileSync(legacyCacheFile, this.refetchCacheFile);
+                console.log(`   Migrated legacy refetch cache to ${this.refetchCacheFile}`);
+            }
+
+            for (const channelIds of Object.values(this.channelConfig || {})) {
+                for (const channelId of channelIds || []) {
+                    const legacyChannelFile = path.join(this.legacyStateDir, `${channelId}_checkpoint.json`);
+                    const stateChannelFile = path.join(this.stateDir, `${channelId}_checkpoint.json`);
+                    if (!fs.existsSync(stateChannelFile) && fs.existsSync(legacyChannelFile)) {
+                        fs.copyFileSync(legacyChannelFile, stateChannelFile);
+                        console.log(`   Migrated legacy channel checkpoint for ${channelId}`);
+                    }
+                }
+            }
+        } catch (err) {
+            console.error('Error migrating legacy state files:', err.message);
+        }
+    }
+
+    loadRefetchCache() {
+        const cache = new Map();
+
+        try {
+            if (!fs.existsSync(this.refetchCacheFile)) {
+                return cache;
+            }
+
+            const content = fs.readFileSync(this.refetchCacheFile, 'utf8').trim();
+            if (!content) {
+                return cache;
+            }
+
+            const data = JSON.parse(content);
+            const serverId = this.serverId || 'default';
+            const serverCache = data.servers?.[serverId] || data[serverId] || data.users || {};
+
+            for (const [userId, entry] of Object.entries(serverCache)) {
+                if (entry && typeof entry === 'object' && entry.status) {
+                    cache.set(userId, entry);
+                }
+            }
+
+            console.log(`   Loaded refetch cache for ${cache.size.toLocaleString()} users`);
+        } catch (err) {
+            console.error('Error loading refetch cache:', err.message);
+        }
+
+        return cache;
+    }
+
+    saveRefetchCache(options = {}) {
+        const { silent = false } = options;
+
+        try {
+            let data = { version: 1, servers: {} };
+
+            if (fs.existsSync(this.refetchCacheFile)) {
+                const content = fs.readFileSync(this.refetchCacheFile, 'utf8').trim();
+                if (content) {
+                    const existing = JSON.parse(content);
+                    if (existing && typeof existing === 'object' && existing.servers) {
+                        data = existing;
+                    }
+                }
+            }
+
+            if (!data.servers || typeof data.servers !== 'object') {
+                data.servers = {};
+            }
+
+            const serverId = this.serverId || 'default';
+            data.version = 1;
+            data.updatedAt = new Date().toISOString();
+            data.servers[serverId] = Object.fromEntries(this.refetchCache);
+
+            fs.ensureDirSync(this.stateDir);
+            fs.writeFileSync(this.refetchCacheFile, JSON.stringify(data, null, 2));
+            this.refetchCacheDirty = false;
+
+            if (!silent) {
+                console.log(`  Refetch cache saved: ${this.refetchCache.size.toLocaleString()} users`);
+            }
+        } catch (err) {
+            console.error('Error saving refetch cache:', err.message);
+        }
+    }
+
+    normalizeRoleNames(roles) {
+        if (!Array.isArray(roles)) return [];
+
+        return roles
+            .map(role => typeof role === 'string' ? role : role?.name)
+            .filter(Boolean);
+    }
+
+    cacheDate(value) {
+        if (!value) return null;
+        return value.toISOString ? value.toISOString() : value;
+    }
+
+    createMemberCacheEntry(userId, member, roles) {
+        const roleNames = roles.length > 0 ? roles : ['No Roles'];
+
+        return {
+            status: 'found',
+            cachedAt: new Date().toISOString(),
+            userId,
+            username: member.user.username,
+            displayName: member.displayName,
+            discriminator: member.user.discriminator || '0',
+            avatar: member.user.avatarURL({ dynamic: true, size: 512 }),
+            accentColor: member.user.accentColor || null,
+            roles: roleNames,
+            isBot: member.user.bot || false,
+            joinedAt: this.cacheDate(member.joinedAt),
+            createdAt: this.cacheDate(member.user.createdAt),
+            customStatus: null,
+            connectedAccounts: []
+        };
+    }
+
+    createLeftServerCacheEntry(userId, activity, error) {
+        return {
+            status: 'left',
+            cachedAt: new Date().toISOString(),
+            userId,
+            username: activity.username,
+            displayName: activity.displayName,
+            discriminator: activity.discriminator || '0',
+            avatar: activity.avatar || null,
+            accentColor: activity.accentColor || null,
+            roles: ['[Left Server]'],
+            isBot: false,
+            joinedAt: activity.joinedAt || null,
+            createdAt: activity.createdAt || null,
+            errorCode: error?.code || null,
+            errorMessage: error?.message || null
+        };
+    }
+
+    memberDataFromCacheEntry(userId, entry) {
+        const roleNames = this.normalizeRoleNames(entry.roles);
+
+        return {
+            id: userId,
+            username: entry.username,
+            displayName: entry.displayName || entry.username,
+            discriminator: entry.discriminator || '0',
+            avatar: entry.avatar || null,
+            accentColor: entry.accentColor || null,
+            roles: roleNames,
+            roleNames: roleNames.length > 0 ? roleNames : ['No Roles'],
+            joinedAt: entry.joinedAt || null,
+            createdAt: entry.createdAt || null,
+            isBot: entry.isBot || false,
+            customStatus: entry.customStatus || null,
+            connectedAccounts: entry.connectedAccounts || []
+        };
+    }
+
+    applyRefetchCacheEntry(activity, userId, entry) {
+        if (!entry || !entry.status) return false;
+
+        if (entry.status === 'found') {
+            const memberData = this.memberDataFromCacheEntry(userId, entry);
+            this.members.set(userId, memberData);
+
+            activity.username = memberData.username || activity.username;
+            activity.displayName = memberData.displayName || activity.displayName;
+            activity.discriminator = memberData.discriminator || activity.discriminator || '0';
+            activity.avatar = memberData.avatar || activity.avatar || null;
+            activity.accentColor = memberData.accentColor || activity.accentColor || null;
+            activity.roles = memberData.roleNames;
+            activity.isBot = memberData.isBot || false;
+            activity.joinedAt = memberData.joinedAt || null;
+            activity.createdAt = memberData.createdAt || null;
+            activity.customStatus = memberData.customStatus || null;
+            activity.connectedAccounts = memberData.connectedAccounts || [];
+            return true;
+        }
+
+        if (entry.status === 'left') {
+            activity.username = entry.username || activity.username;
+            activity.displayName = entry.displayName || activity.displayName;
+            activity.discriminator = entry.discriminator || activity.discriminator || '0';
+            activity.avatar = entry.avatar || activity.avatar || null;
+            activity.accentColor = entry.accentColor || activity.accentColor || null;
+            activity.roles = ['[Left Server]'];
+            activity.isBot = false;
+            activity.joinedAt = entry.joinedAt || activity.joinedAt || null;
+            activity.createdAt = entry.createdAt || activity.createdAt || null;
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Load existing per-channel checkpoint data from {channelId}_checkpoint.json
+     * @param {string} channelId
+     * @returns {Array} Previously saved messages for this channel
+     */
+    loadChannelCheckpointData(channelId) {
+        const filePath = path.join(this.checkpointDataDir, `${channelId}_checkpoint.json`);
+        try {
+            if (fs.existsSync(filePath)) {
+                const content = fs.readFileSync(filePath, 'utf8').trim();
+                if (content) {
+                    const data = JSON.parse(content);
+                    console.log(`   📂 Loaded ${data.length.toLocaleString()} existing messages from ${channelId}_checkpoint.json`);
+                    return data;
+                }
+            }
+        } catch (err) {
+            console.error(`   ⚠️ Error loading checkpoint data for ${channelId}:`, err.message);
+        }
+        return [];
+    }
+
+    /**
+     * Save per-channel checkpoint data to {channelId}_checkpoint.json
+     * Merges new messages with existing ones, deduplicates, and sorts newest-first.
+     * This ensures NO data is ever lost between incremental runs.
+     *
+     * @param {string} channelId
+     * @param {Array} newMessages - Newly fetched messages (since last checkpoint)
+     * @param {Array} existingMessages - Previously saved messages
+     * @returns {Array} The merged, deduplicated list
+     */
+    saveChannelCheckpointData(channelId, newMessages, existingMessages) {
+        const filePath = path.join(this.checkpointDataDir, `${channelId}_checkpoint.json`);
+        try {
+            // Merge: new messages first (newest), then existing
+            const allMessages = [...newMessages, ...existingMessages];
+
+            // Deduplicate using a composite key (authorId + timestamp + content prefix)
+            const seen = new Set();
+            const deduplicated = [];
+            for (const msg of allMessages) {
+                const ts = new Date(msg.createdAt).getTime();
+                const key = `${msg.authorId}_${ts}_${(msg.content || '').substring(0, 50)}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    deduplicated.push(msg);
+                }
+            }
+
+            // Sort by createdAt descending (newest first)
+            deduplicated.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+            fs.writeFileSync(filePath, JSON.stringify(deduplicated, null, 2));
+
+            const dupsRemoved = allMessages.length - deduplicated.length;
+            console.log(`   💾 Saved ${deduplicated.length.toLocaleString()} total messages to ${channelId}_checkpoint.json`);
+            console.log(`      (${newMessages.length.toLocaleString()} new + ${existingMessages.length.toLocaleString()} existing, ${dupsRemoved} duplicates removed)`);
+
+            return deduplicated;
+        } catch (err) {
+            console.error(`   ⚠️ Error saving checkpoint data for ${channelId}:`, err.message);
+            return [...newMessages, ...existingMessages];
         }
     }
 
@@ -157,11 +451,12 @@ class MemberAnalytics {
             throw new Error('No Discord token or email/password provided. Check your .env file.');
         }
 
-        if (!config.serverId) {
+        if (!this.serverId) {
             throw new Error('Server ID not provided. Check your .env file.');
         }
 
         await utils.ensureDir(this.outputDir);
+        await utils.ensureDir(this.stateDir);
 
         this.client.on('ready', () => {
             console.log(`Logged in as ${this.client.user.tag}!`);
@@ -187,9 +482,9 @@ class MemberAnalytics {
     async getAllMembers() {
         console.log('👥 Preparing member data...');
 
-        const guild = await this.client.guilds.fetch(config.serverId);
+        const guild = await this.client.guilds.fetch(this.serverId);
         if (!guild) {
-            throw new Error(`Server ID ${config.serverId} not found`);
+            throw new Error(`Server ID ${this.serverId} not found`);
         }
 
         this.guild = guild; // Store for later use
@@ -323,9 +618,9 @@ class MemberAnalytics {
      * Get all text channels from the server
      */
     async getAllTextChannels() {
-        const guild = await this.client.guilds.fetch(config.serverId);
+        const guild = await this.client.guilds.fetch(this.serverId);
         if (!guild) {
-            throw new Error(`Server ID ${config.serverId} not found`);
+            throw new Error(`Server ID ${this.serverId} not found`);
         }
 
         const channels = await guild.channels.fetch();
@@ -381,6 +676,7 @@ class MemberAnalytics {
 
         // Reset channel stats
         this.channelStats = [];
+        this.refetchCacheHits = 0;
 
         // Process each category
         for (const [category, channelIds] of Object.entries(channelCategories)) {
@@ -407,26 +703,48 @@ class MemberAnalytics {
      * Try to refetch member data for users marked as [Not Fetched]
      */
     async refetchMissingMembers() {
-        const guild = await this.client.guilds.fetch(config.serverId);
+        const guild = await this.client.guilds.fetch(this.serverId);
 
         // First, count how many need refetching
-        const usersToRefetch = [];
+        let usersToRefetch = [];
         for (const [userId, activity] of this.memberActivity) {
             if (activity.roles && activity.roles.includes('[Not Fetched]') && !activity.isBot) {
                 usersToRefetch.push({ userId, activity });
             }
         }
 
+        let cacheHitCount = 0;
+        if (this.refetchCache.size > 0) {
+            const unresolvedUsers = [];
+            for (const item of usersToRefetch) {
+                const cachedEntry = this.refetchCache.get(item.userId);
+                if (this.applyRefetchCacheEntry(item.activity, item.userId, cachedEntry)) {
+                    cacheHitCount++;
+                } else {
+                    unresolvedUsers.push(item);
+                }
+            }
+            usersToRefetch = unresolvedUsers;
+            this.refetchCacheHits += cacheHitCount;
+        }
+
         if (usersToRefetch.length === 0) {
+            if (cacheHitCount > 0) {
+                console.log(`  Refetch cache resolved ${cacheHitCount.toLocaleString()} users before API calls.`);
+            }
             console.log('  ✅ All members already fetched!');
             return;
         }
 
         console.log(`  Found ${usersToRefetch.length} users to refetch...`);
+        if (cacheHitCount > 0) {
+            console.log(`  Refetch cache resolved ${cacheHitCount.toLocaleString()} users before API calls.`);
+        }
         progress.reset();
 
         let successCount = 0;
         let failCount = 0;
+        let cacheWriteCount = 0;
 
         for (let i = 0; i < usersToRefetch.length; i++) {
             const { userId, activity } = usersToRefetch[i];
@@ -447,36 +765,34 @@ class MemberAnalytics {
                         .filter(role => role.name !== '@everyone')
                         .map(role => role.name);
 
-                    // Update activity with correct data
-                    activity.displayName = member.displayName;
-                    activity.discriminator = member.user.discriminator;
-                    activity.avatar = member.user.avatarURL({ dynamic: true, size: 512 });
-                    activity.roles = roles.length > 0 ? roles : ['No Roles'];
-                    activity.joinedAt = member.joinedAt;
-                    activity.createdAt = member.user.createdAt;
-
-                    // Also update members map
-                    this.members.set(userId, {
-                        id: userId,
-                        username: member.user.username,
-                        displayName: member.displayName,
-                        roles: roles,
-                        roleNames: roles,
-                        joinedAt: member.joinedAt,
-                        createdAt: member.user.createdAt
-                    });
+                    const cacheEntry = this.createMemberCacheEntry(userId, member, roles);
+                    this.refetchCache.set(userId, cacheEntry);
+                    this.refetchCacheDirty = true;
+                    cacheWriteCount++;
+                    this.applyRefetchCacheEntry(activity, userId, cacheEntry);
 
                     successCount++;
                 }
             } catch (err) {
-                // Member truly left the server
-                activity.roles = ['[Left Server]'];
+                const cacheEntry = this.createLeftServerCacheEntry(userId, activity, err);
+                this.refetchCache.set(userId, cacheEntry);
+                this.refetchCacheDirty = true;
+                cacheWriteCount++;
+                this.applyRefetchCacheEntry(activity, userId, cacheEntry);
                 failCount++;
             }
 
-            // Jeda acak untuk rate limiting (sekitar 3x lebih lambat: 150ms - 350ms)
-            const randomDelay = Math.floor(Math.random() * 200) + 150;
+            if (this.refetchCacheDirty && cacheWriteCount % 100 === 0) {
+                this.saveRefetchCache({ silent: true });
+            }
+
+            // Jeda kecil untuk rate limiting
+            const randomDelay = Math.floor(Math.random() * 50) + 25;
             await new Promise(r => setTimeout(r, randomDelay));
+        }
+
+        if (this.refetchCacheDirty) {
+            this.saveRefetchCache();
         }
 
         const elapsed = progress.formatTime(Date.now() - progress.startTime);
@@ -611,10 +927,21 @@ class MemberAnalytics {
             const limitStatus = hitLimit ? '⚠️  HIT LIMIT' : '✅ Complete';
             progress.finish(`     ✓ Done: ${totalFormatted} messages | Time: ${elapsed} | ${limitStatus}`);
 
-            // Save the NEW checkpoint (if we found any messages)
+            // =============================================
+            // CHECKPOINT DATA: Load existing + merge + save
+            // =============================================
+            const existingChannelData = this.loadChannelCheckpointData(channelId);
+            const mergedMessages = this.saveChannelCheckpointData(channelId, messages, existingChannelData);
+
+            // Use ALL merged data for activity counting (not just new messages)
+            // This ensures we count every message ever sent, zero data loss
+            messages = mergedMessages;
+
+            // Save the NEW checkpoint ID (if we found any new messages)
             if (newCheckpointId) {
                 this.checkpoints[channelId] = newCheckpointId;
                 this.saveCheckpoints();
+                console.log(`   📍 Checkpoint updated to: ${newCheckpointId}`);
             }
 
             // Count messages per user for this category
@@ -625,6 +952,7 @@ class MemberAnalytics {
                 if (!activity) {
                     // Check if user exists in members cache
                     let memberData = this.members.get(msg.authorId);
+                    let cachedEntry = null;
 
                     // Determine roles based on available data
                     let userRoles;
@@ -634,20 +962,31 @@ class MemberAnalytics {
                         userRoles = ['[Bot]'];
                     } else {
                         // User not in our member cache - they may have left or weren't fetched
-                        userRoles = ['[Not Fetched]'];
+                        cachedEntry = this.refetchCache.get(msg.authorId);
+                        if (cachedEntry?.status === 'found') {
+                            memberData = this.memberDataFromCacheEntry(msg.authorId, cachedEntry);
+                            this.members.set(msg.authorId, memberData);
+                            userRoles = memberData.roleNames;
+                            this.refetchCacheHits++;
+                        } else if (cachedEntry?.status === 'left') {
+                            userRoles = ['[Left Server]'];
+                            this.refetchCacheHits++;
+                        } else {
+                            userRoles = ['[Not Fetched]'];
+                        }
                     }
 
                     activity = {
                         userId: msg.authorId,
-                        username: msg.authorUsername,
-                        displayName: memberData ? memberData.displayName : msg.authorUsername,
-                        discriminator: memberData?.discriminator || '0',
-                        avatar: memberData?.avatar || null,
-                        accentColor: memberData?.accentColor || null,
+                        username: memberData?.username || cachedEntry?.username || msg.authorUsername,
+                        displayName: memberData?.displayName || cachedEntry?.displayName || msg.authorUsername,
+                        discriminator: memberData?.discriminator || cachedEntry?.discriminator || '0',
+                        avatar: memberData?.avatar || cachedEntry?.avatar || null,
+                        accentColor: memberData?.accentColor || cachedEntry?.accentColor || null,
                         roles: userRoles,
-                        isBot: msg.isBot,
-                        joinedAt: memberData?.joinedAt || null,
-                        createdAt: memberData?.createdAt || null,
+                        isBot: memberData?.isBot || msg.isBot,
+                        joinedAt: memberData?.joinedAt || cachedEntry?.joinedAt || null,
+                        createdAt: memberData?.createdAt || cachedEntry?.createdAt || null,
                         customStatus: memberData?.customStatus || null,
                         connectedAccounts: memberData?.connectedAccounts || [],
                         activity: {},

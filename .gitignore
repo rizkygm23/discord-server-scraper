@@ -19,6 +19,7 @@ output/
 downloads/
 data/
 analytics/
+member_refetch_cache.json
 
 # Log files
 *.log

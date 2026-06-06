@@ -1,0 +1,32 @@
+{
+  "defaultProject": "seismic",
+  "projects": [
+    {
+      "key": "seismic",
+      "name": "Seismic",
+      "serverId": "${SERVER_ID}",
+      "tableName": "seismic_dc_user",
+      "outputDir": "data/seismic/output",
+      "stateDir": "data/seismic/state",
+      "messageLimit": "Infinity",
+      "channels": {
+        "tweet": [
+          "1347351535071400047"
+        ],
+        "art": [
+          "1349784473956257914"
+        ]
+      },
+      "features": {
+        "magnitudePromotion": true,
+        "regionRole": true,
+        "sanitizePromotions": true
+      },
+      "schedule": {
+        "timezone": "Asia/Jakarta",
+        "defaultHour": 7,
+        "fridayHour": 17
+      }
+    }
+  ]
+}

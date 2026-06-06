@@ -1,43 +1,75 @@
+const fs = require('fs-extra');
+const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
-/**
- * Supabase client for Discord Analytics
- */
+const DEFAULT_TABLE = 'seismic_dc_user';
+const IDENTIFIER_REGEX = /^[a-z][a-z0-9_]*$/;
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-// Prioritize Service Role Key for backend writes to bypass RLS
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-    console.warn('⚠️ Supabase credentials not configured. Data will not be saved to database.');
+    console.warn('Supabase credentials not configured. Data will not be saved to database.');
 }
 
 const supabase = supabaseUrl && supabaseKey
     ? createClient(supabaseUrl, supabaseKey)
     : null;
 
-/**
- * Save member activity data to Supabase
- * @param {Array} activityData - Array of member activity objects
- * @returns {Object} - Result with success count and errors
- */
-async function saveToSupabase(activityData) {
-    if (!supabase) {
-        console.log('⚠️ Supabase not configured, skipping database save.');
-        return { success: 0, errors: 0, skipped: true };
+function normalizeIdentifier(value, fallback = 'column') {
+    const normalized = String(value || fallback)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .replace(/_+/g, '_');
+
+    if (!normalized) return fallback;
+    if (/^[0-9]/.test(normalized)) return `c_${normalized}`;
+    return normalized;
+}
+
+function assertIdentifier(identifier, type = 'identifier') {
+    if (!IDENTIFIER_REGEX.test(identifier)) {
+        throw new Error(`Invalid ${type}: "${identifier}". Use lowercase letters, numbers, and underscores, starting with a letter.`);
+    }
+    return identifier;
+}
+
+function getTableName(options = {}) {
+    return assertIdentifier(options.tableName || DEFAULT_TABLE, 'table name');
+}
+
+function getCategoryColumnMap(categories = [], activityData = []) {
+    const categoryNames = new Set(categories || []);
+
+    for (const member of activityData || []) {
+        Object.keys(member.activity || {}).forEach(category => categoryNames.add(category));
     }
 
-    console.log(`\n📤 Saving ${activityData.length} members to Supabase...`);
+    const usedColumns = new Set();
+    const map = {};
 
-    let successCount = 0;
-    let errorCount = 0;
-    const batchSize = 100; // Insert in batches to avoid timeout
+    for (const category of categoryNames) {
+        let column = normalizeIdentifier(category, 'activity');
+        let candidate = column;
+        let suffix = 2;
 
-    // Transform data to match table schema
-    // IMPORTANT: We must NOT include role_kamis/role_jumat/is_promoted if they are undefined
-    // because Supabase will convert "undefined" to NULL and overwrite existing data!
-    const records = activityData.map(member => {
+        while (usedColumns.has(candidate)) {
+            candidate = `${column}_${suffix}`;
+            suffix++;
+        }
+
+        usedColumns.add(candidate);
+        map[category] = assertIdentifier(candidate, 'category column');
+    }
+
+    return map;
+}
+
+function mapActivityRecords(activityData, categoryColumnMap) {
+    return activityData.map(member => {
         const record = {
             user_id: member.userId,
             username: member.username,
@@ -51,16 +83,16 @@ async function saveToSupabase(activityData) {
             account_created: member.createdAt || null,
             custom_status: member.customStatus || null,
             connected_accounts: member.connectedAccounts || [],
-            tweet: member.activity?.tweet || 0,
-            art: member.activity?.art || 0,
             total_messages: member.totalMessages || 0,
             first_message_date: member.firstMessageDate || null,
             last_message_date: member.lastMessageDate || null,
             x_username: member.xUsername || null
         };
 
-        // Only add these fields if they have actual values (not undefined/null)
-        // This prevents Supabase from overwriting existing data with NULL
+        for (const [category, column] of Object.entries(categoryColumnMap)) {
+            record[column] = member.activity?.[category] || 0;
+        }
+
         if (member.roleKamis !== undefined && member.roleKamis !== null) {
             record.role_kamis = member.roleKamis;
         }
@@ -76,15 +108,215 @@ async function saveToSupabase(activityData) {
 
         return record;
     });
+}
 
-    // Process in batches
+function buildProjectTableSql(tableName, categoryColumnMap = {}) {
+    assertIdentifier(tableName, 'table name');
+    const categoryColumns = Object.values(categoryColumnMap);
+    categoryColumns.forEach(column => assertIdentifier(column, 'category column'));
+
+    const categoryCreateColumns = categoryColumns
+        .map(column => `    ${column} INTEGER DEFAULT 0,`)
+        .join('\n');
+
+    const categoryAlterColumns = categoryColumns
+        .map(column => `ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS ${column} INTEGER DEFAULT 0;`)
+        .join('\n');
+
+    const categoryIndexes = categoryColumns
+        .map(column => `CREATE INDEX IF NOT EXISTS idx_${tableName}_${column} ON ${tableName}(${column} DESC);`)
+        .join('\n');
+
+    return `-- Auto-generated schema for ${tableName}
+-- Generated at ${new Date().toISOString()}
+
+CREATE TABLE IF NOT EXISTS ${tableName} (
+    id BIGSERIAL PRIMARY KEY,
+    user_id TEXT UNIQUE NOT NULL,
+    username TEXT NOT NULL,
+    display_name TEXT,
+    discriminator TEXT DEFAULT '0',
+    avatar_url TEXT,
+    banner_url TEXT,
+    accent_color INTEGER,
+    roles TEXT[],
+    is_bot BOOLEAN DEFAULT FALSE,
+    joined_at TIMESTAMP,
+    account_created TIMESTAMP,
+    custom_status TEXT,
+    connected_accounts TEXT[],
+${categoryCreateColumns ? `${categoryCreateColumns}\n` : ''}    total_messages INTEGER DEFAULT 0,
+    x_username TEXT,
+    first_message_date TIMESTAMP,
+    last_message_date TIMESTAMP,
+    role_kamis DECIMAL(3,1),
+    role_jumat DECIMAL(3,1),
+    is_promoted BOOLEAN DEFAULT FALSE,
+    region VARCHAR(100),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS display_name TEXT;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS discriminator TEXT DEFAULT '0';
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS banner_url TEXT;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS accent_color INTEGER;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS roles TEXT[];
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS is_bot BOOLEAN DEFAULT FALSE;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS joined_at TIMESTAMP;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS account_created TIMESTAMP;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS custom_status TEXT;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS connected_accounts TEXT[];
+${categoryAlterColumns ? `${categoryAlterColumns}\n` : ''}ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS total_messages INTEGER DEFAULT 0;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS x_username TEXT;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS first_message_date TIMESTAMP;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS last_message_date TIMESTAMP;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS role_kamis DECIMAL(3,1);
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS role_jumat DECIMAL(3,1);
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS is_promoted BOOLEAN DEFAULT FALSE;
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS region VARCHAR(100);
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+
+CREATE INDEX IF NOT EXISTS idx_${tableName}_username ON ${tableName}(username);
+CREATE INDEX IF NOT EXISTS idx_${tableName}_total_messages ON ${tableName}(total_messages DESC);
+CREATE INDEX IF NOT EXISTS idx_${tableName}_joined_at ON ${tableName}(joined_at);
+CREATE INDEX IF NOT EXISTS idx_${tableName}_account_created ON ${tableName}(account_created);
+${categoryIndexes ? `${categoryIndexes}\n` : ''}CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+DROP TRIGGER IF EXISTS update_${tableName}_updated_at ON ${tableName};
+CREATE TRIGGER update_${tableName}_updated_at
+    BEFORE UPDATE ON ${tableName}
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+`;
+}
+
+async function writeProjectSchemaSql(sql, options = {}) {
+    const outputDir = options.outputDir || '.';
+    const schemaDir = path.join(outputDir, 'database');
+    await fs.ensureDir(schemaDir);
+
+    const filePath = path.join(schemaDir, `${getTableName(options)}.sql`);
+    await fs.writeFile(filePath, sql, 'utf8');
+    return filePath;
+}
+
+async function tableExists(tableName) {
+    if (!supabase) return false;
+
+    const { error } = await supabase
+        .from(tableName)
+        .select('id', { head: true, count: 'exact' })
+        .limit(1);
+
+    return !error;
+}
+
+async function tryExecuteSql(sql) {
+    if (!supabase) {
+        return { success: false, error: 'Supabase client is not initialized.' };
+    }
+
+    const rpcNames = [
+        process.env.SUPABASE_SQL_RPC,
+        'exec_sql',
+        'execute_sql'
+    ].filter(Boolean);
+
+    const tried = new Set();
+    for (const rpcName of rpcNames) {
+        if (tried.has(rpcName)) continue;
+        tried.add(rpcName);
+
+        for (const params of [{ sql }, { query: sql }]) {
+            try {
+                const { error } = await supabase.rpc(rpcName, params);
+                if (!error) {
+                    return { success: true, rpcName };
+                }
+            } catch (err) {
+                // Try the next known RPC shape.
+            }
+        }
+    }
+
+    return {
+        success: false,
+        error: 'No SQL executor RPC is available. Generated SQL must be run manually or via a configured RPC.'
+    };
+}
+
+async function ensureProjectTable(options = {}) {
+    const tableName = getTableName(options);
+    const categoryColumnMap = getCategoryColumnMap(options.categories || [], options.activityData || []);
+    const sql = buildProjectTableSql(tableName, categoryColumnMap);
+    const schemaPath = await writeProjectSchemaSql(sql, { ...options, tableName });
+
+    if (!supabase) {
+        return {
+            success: false,
+            skipped: true,
+            schemaPath,
+            error: 'Supabase client is not initialized.'
+        };
+    }
+
+    const exists = await tableExists(tableName);
+    if (exists && !options.forceSchemaSync) {
+        return { success: true, exists: true, schemaPath, tableName };
+    }
+
+    const execResult = await tryExecuteSql(sql);
+    if (execResult.success) {
+        return {
+            success: true,
+            exists: true,
+            createdOrSynced: true,
+            rpcName: execResult.rpcName,
+            schemaPath,
+            tableName
+        };
+    }
+
+    return {
+        success: exists,
+        exists,
+        schemaPath,
+        tableName,
+        error: execResult.error
+    };
+}
+
+async function saveToSupabase(activityData, options = {}) {
+    if (!supabase) {
+        console.log('Supabase not configured, skipping database save.');
+        return { success: 0, errors: 0, skipped: true };
+    }
+
+    const tableName = getTableName(options);
+    const categoryColumnMap = getCategoryColumnMap(options.categories || [], activityData);
+    const records = mapActivityRecords(activityData, categoryColumnMap);
+
+    console.log(`\nSaving ${activityData.length} members to Supabase table "${tableName}"...`);
+
+    let successCount = 0;
+    let errorCount = 0;
+    const batchSize = options.batchSize || 100;
+
     for (let i = 0; i < records.length; i += batchSize) {
         const batch = records.slice(i, i + batchSize);
 
         try {
-            // Upsert: insert if not exists, update if exists
-            const { data, error } = await supabase
-                .from('seismic_dc_user')
+            const { error } = await supabase
+                .from(tableName)
                 .upsert(batch, {
                     onConflict: 'user_id',
                     ignoreDuplicates: false
@@ -103,83 +335,65 @@ async function saveToSupabase(activityData) {
         }
     }
 
-    console.log(`\n✅ Supabase save complete: ${successCount} success, ${errorCount} errors`);
-
+    console.log(`\nSupabase save complete: ${successCount} success, ${errorCount} errors`);
     return { success: successCount, errors: errorCount, skipped: false };
 }
 
-/**
- * Get all members from Supabase
- * @returns {Array} - Array of member records
- */
-/**
- * Get all members from Supabase (Handles pagination for >1000 records)
- * @returns {Array} - Array of member records
- */
-async function getMembersFromSupabase() {
+async function getMembersFromSupabase(options = {}) {
     if (!supabase) {
         return [];
     }
 
+    const tableName = getTableName(options);
+    const pageSize = options.pageSize || 1000;
     let allMembers = [];
     let from = 0;
-    // FETCH ALMOST ALL AT ONCE (Max 20k limit)
-    let step = 19999; // Fetch 20,000 records per batch (0-19999)
     let more = true;
 
-    console.log('📥 Fetching existing members from Supabase...');
+    console.log(`Fetching existing members from Supabase table "${tableName}"...`);
 
     while (more) {
+        const to = from + pageSize - 1;
         const { data, error } = await supabase
-            .from('seismic_dc_user')
+            .from(tableName)
             .select('*')
-            // IMPORTANT: Must verify sorting is deterministic!
-            // Adding user_id as secondary sort ensures stable pagination
             .order('total_messages', { ascending: false })
             .order('user_id', { ascending: true })
-            .range(from, from + step);
+            .range(from, to);
 
         if (error) {
-            console.error(`Error fetching members (range ${from}-${from + step}):`, error.message);
-            // Break loop on error to process partial data at least
+            console.error(`Error fetching members (range ${from}-${to}):`, error.message);
             break;
         }
 
         if (data && data.length > 0) {
             allMembers = allMembers.concat(data);
-            from += step + 1;
-
-            // If we got less than the step + 1 (meaning full page), we are done
-            if (data.length < 1000) {
-                more = false;
-            }
-
-            // Log progress for large datasets
+            from += pageSize;
+            more = data.length === pageSize;
             process.stdout.write(`\r   Fetched ${allMembers.length} records...`);
         } else {
             more = false;
         }
     }
 
-    console.log(`\n✅ Total members fetched: ${allMembers.length}`);
+    console.log(`\nTotal members fetched: ${allMembers.length}`);
     return allMembers;
 }
 
-/**
- * Get leaderboard from Supabase
- * @param {string} category - 'tweet', 'art', 'total_messages'
- * @param {number} limit - Number of records to return
- * @returns {Array} - Leaderboard data
- */
-async function getLeaderboard(category = 'total_messages', limit = 50) {
+async function getLeaderboard(category = 'total_messages', limit = 50, options = {}) {
     if (!supabase) {
         return [];
     }
 
+    const tableName = getTableName(options);
+    const column = category === 'total_messages'
+        ? 'total_messages'
+        : normalizeIdentifier(category, 'activity');
+
     const { data, error } = await supabase
-        .from('seismic_dc_user')
+        .from(tableName)
         .select('*')
-        .order(category, { ascending: false })
+        .order(column, { ascending: false })
         .limit(limit);
 
     if (error) {
@@ -190,47 +404,39 @@ async function getLeaderboard(category = 'total_messages', limit = 50) {
     return data;
 }
 
-
-
-/**
- * Test Supabase connection
- * @returns {Promise<boolean>}
- */
-async function testConnection() {
+async function testConnection(options = {}) {
     if (!supabase) {
-        console.error('❌ Supabase client is not initialized (missing URL or KEY).');
+        console.error('Supabase client is not initialized (missing URL or KEY).');
         return false;
     }
 
+    const tableName = getTableName(options);
+
     try {
-        console.log('📡 Testing connection to Supabase...');
-        const { data, error, count } = await supabase
-            .from('seismic_dc_user')
+        console.log(`Testing connection to Supabase table "${tableName}"...`);
+        const { error, count } = await supabase
+            .from(tableName)
             .select('id', { count: 'exact', head: true });
 
         if (error) {
-            console.error('❌ Supabase connection failed:', error.message);
+            console.error('Supabase connection/table check failed:', error.message);
             return false;
         }
 
-        console.log(`✅ Connection successful! Found ${count} records in 'seismic_dc_user'.`);
+        console.log(`Connection successful. Found ${count} records in "${tableName}".`);
         return true;
     } catch (err) {
-        console.error('❌ Unexpected error during Supabase connection test:', err);
+        console.error('Unexpected error during Supabase connection test:', err);
         return false;
     }
 }
 
-/**
- * Check for users who have Magnitude roles but are missing snapshots
- * @returns {Promise<number>} - Count of missing users
- */
-async function checkMissingSnapshots() {
+async function checkMissingSnapshots(options = {}) {
     if (!supabase) return 0;
 
-    // Fetch users with NULL snapshots
+    const tableName = getTableName(options);
     const { data, error } = await supabase
-        .from('seismic_dc_user')
+        .from(tableName)
         .select('username, roles, role_kamis, role_jumat')
         .is('role_kamis', null)
         .is('role_jumat', null);
@@ -242,44 +448,33 @@ async function checkMissingSnapshots() {
 
     if (!data || data.length === 0) return 0;
 
-    // Filter locally for 'Magnitude' roles
-    // Regex matches "Magnitude 1.0" or "magnitude 5" etc
     const magnitudeRegex = /magnitude\s+[1-9]/i;
-
-    // We only care about users who actually HAVE a magnitude role
-    // but somehow the scraper "Missed" snapshotting them.
     const missingUsers = data.filter(user => {
         if (!user.roles || !Array.isArray(user.roles)) return false;
-        // Check if any role string matches the regex
         return user.roles.some(role => {
-            const rName = typeof role === 'string' ? role : role.name;
-            return rName && magnitudeRegex.test(rName);
+            const roleName = typeof role === 'string' ? role : role.name;
+            return roleName && magnitudeRegex.test(roleName);
         });
     });
 
     if (missingUsers.length > 0) {
-        console.log(`\n⚠️  WARNING: Found ${missingUsers.length} users with Magnitude roles but MISSING snapshots!`);
-        // Show first 5 examples
+        console.log(`\nWARNING: Found ${missingUsers.length} users with Magnitude roles but missing snapshots.`);
         missingUsers.slice(0, 5).forEach(u => console.log(`   - ${u.username}: ${JSON.stringify(u.roles)}`));
     } else {
-        console.log('\n✅ Data Integrity Check: All Magnitude users have snapshots.');
+        console.log('\nData Integrity Check: All Magnitude users have snapshots.');
     }
 
     return missingUsers.length;
 }
 
-/**
- * Sanitize Promotion Status (Fix False Positives)
- * Logic: If role_kamis >= role_jumat, is_promoted MUST be FALSE.
- */
-async function sanitizePromotions() {
+async function sanitizePromotions(options = {}) {
     if (!supabase) return;
 
-    console.log('\n🧹 Sanitizing promotion data (Removing false positives)...');
+    const tableName = getTableName(options);
+    console.log(`\nSanitizing promotion data in "${tableName}"...`);
 
-    // 1. Get all users who are currently marked as "Promoted"
     const { data: likelyFalse, error } = await supabase
-        .from('seismic_dc_user')
+        .from(tableName)
         .select('user_id, username, role_kamis, role_jumat')
         .eq('is_promoted', true);
 
@@ -288,36 +483,28 @@ async function sanitizePromotions() {
         return;
     }
 
-    // 2. Filter locally: Find impostors where Kamis >= Jumat
-    const impostors = likelyFalse.filter(u => {
-        // If snapshot missing, we can't be sure, so set false to be safe
-        if (u.role_kamis == null || u.role_jumat == null) return true;
-
-        // Logic: If Kamis >= Jumat, there is NO growth. So is_promoted should be false.
-        return Number(u.role_kamis) >= Number(u.role_jumat);
+    const impostors = likelyFalse.filter(user => {
+        if (user.role_kamis == null || user.role_jumat == null) return true;
+        return Number(user.role_kamis) >= Number(user.role_jumat);
     });
 
     if (impostors.length === 0) {
-        console.log('   ✨ No false promotions found. Data is clean.');
+        console.log('   No false promotions found. Data is clean.');
         return;
     }
 
-    console.log(`   ⚠️ Found ${impostors.length} false promotions. Fixing...`);
+    console.log(`   Found ${impostors.length} false promotions. Fixing...`);
 
-    // 3. Fix them in batches
-    // We update is_promoted = FALSE for these specific User IDs
-    const impostorIds = impostors.map(u => u.user_id);
-
+    const impostorIds = impostors.map(user => user.user_id);
     const { error: updateError } = await supabase
-        .from('seismic_dc_user')
+        .from(tableName)
         .update({ is_promoted: false })
         .in('user_id', impostorIds);
 
     if (updateError) {
-        console.error('   ❌ Failed to sanitize promotions:', updateError.message);
+        console.error('   Failed to sanitize promotions:', updateError.message);
     } else {
-        console.log(`   ✅ Successfully cleaned ${impostorIds.length} false records.`);
-        impostors.slice(0, 3).forEach(u => console.log(`      - Fixed: ${u.username} (Thu: ${u.role_kamis} == Fri: ${u.role_jumat})`));
+        console.log(`   Successfully cleaned ${impostorIds.length} false records.`);
     }
 }
 
@@ -328,5 +515,9 @@ module.exports = {
     getLeaderboard,
     testConnection,
     checkMissingSnapshots,
-    sanitizePromotions
+    sanitizePromotions,
+    ensureProjectTable,
+    buildProjectTableSql,
+    getCategoryColumnMap,
+    normalizeIdentifier
 };

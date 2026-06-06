@@ -1,47 +1,15 @@
 const MemberAnalytics = require('./analytics');
-const { saveToSupabase, getMembersFromSupabase, testConnection, checkMissingSnapshots, sanitizePromotions } = require('./supabase');
-const config = require('./config');
+const {
+    saveToSupabase,
+    getMembersFromSupabase,
+    testConnection,
+    checkMissingSnapshots,
+    sanitizePromotions,
+    ensureProjectTable,
+    normalizeIdentifier
+} = require('./supabase');
+const { loadProjectConfig, getProject } = require('./project-config');
 
-// Hardcoded Channel Configuration (copied from analyze-members.js)
-const CHANNEL_CATEGORIES = {
-    // Channel untuk post tweet/twitter
-    "tweet": [
-        "1347351535071400047",  // Tweet channel
-    ],
-
-    // Channel untuk art submissions  
-    "art": [
-        "1349784473956257914",  // Art channel
-    ]
-};
-
-// Helper to extract highest magnitude from role list
-function getHighestMagnitude(roles) {
-    let maxMag = 0.0;
-    // Regex for "Magnitude X.X" or just "Magnitude X"
-    const regex = /^magnitude\s+(\d+(\.\d+)?)$/i;
-
-    if (!roles || !Array.isArray(roles)) return null;
-
-    roles.forEach(role => {
-        // Handle both string array or object array with 'name' property
-        const roleData = typeof role === 'string' ? role : role.name;
-
-        if (!roleData) return;
-
-        const roleName = roleData.trim(); // Trim whitespace
-        const match = roleName.match(regex);
-
-        if (match) {
-            const val = parseFloat(match[1]);
-            if (val > maxMag) maxMag = val;
-        }
-    });
-
-    return maxMag > 0 ? maxMag : null;
-}
-
-// List of known regional roles from the Discord server
 const REGIONAL_ROLES = [
     'Ukrainian', 'Indian', 'Turkish', 'Russian', 'Indonesian',
     'Nigerian', 'Vietnamese', 'Pakistan', 'Philippines', 'Chinese',
@@ -50,7 +18,25 @@ const REGIONAL_ROLES = [
     'Singapore/Malaysia', 'Moroccan', 'Arabic', 'Egyptian'
 ];
 
-// Helper to extract regional role from user's roles
+function getHighestMagnitude(roles) {
+    let maxMag = 0.0;
+    const regex = /^magnitude\s+(\d+(\.\d+)?)$/i;
+
+    if (!roles || !Array.isArray(roles)) return null;
+
+    roles.forEach(role => {
+        const roleName = (typeof role === 'string' ? role : role.name || '').trim();
+        const match = roleName.match(regex);
+
+        if (match) {
+            const value = parseFloat(match[1]);
+            if (value > maxMag) maxMag = value;
+        }
+    });
+
+    return maxMag > 0 ? maxMag : null;
+}
+
 function getRegionalRole(roles) {
     if (!roles || !Array.isArray(roles)) return null;
 
@@ -58,207 +44,313 @@ function getRegionalRole(roles) {
         const roleName = typeof role === 'string' ? role : role.name;
         if (!roleName) continue;
 
-        // Check if role matches any known regional role (case-insensitive)
         const found = REGIONAL_ROLES.find(
-            r => r.toLowerCase() === roleName.trim().toLowerCase()
+            region => region.toLowerCase() === roleName.trim().toLowerCase()
         );
         if (found) return found;
     }
+
     return null;
 }
 
-// Helper to calculate time until next run based on schedule (07:00 WIB daily, 17:00 WIB on Fridays)
-function getTimeUntilNextRun() {
-    const now = Date.now();
-    // Offset for WIB (UTC+7) is 7 hours
-    const WIB_OFFSET_MS = 7 * 3600 * 1000;
-
-    // Check up to the next 7 days
-    for (let i = 0; i <= 7; i++) {
-        // Calculate the Date components for today + i days in WIB
-        const evalTimeMs = now + (i * 24 * 3600 * 1000) + WIB_OFFSET_MS;
-        const wibObj = new Date(evalTimeMs);
-
-        const wibYear = wibObj.getUTCFullYear();
-        const wibMonth = wibObj.getUTCMonth();
-        const wibDate = wibObj.getUTCDate();
-        const wibDay = wibObj.getUTCDay(); // 0=Sun, 1=Mon... 5=Fri
-
-        // Target is 17:00 WIB on Friday, 07:00 WIB on other days
-        const targetHourWIB = (wibDay === 5) ? 17 : 7;
-
-        // Convert target back to UTC ms (subtract 7 hours)
-        const targetMs = Date.UTC(wibYear, wibMonth, wibDate, targetHourWIB - 7, 0, 0, 0);
-
-        if (targetMs > now) {
-            return targetMs - now;
-        }
-    }
-
-    // Fallback: 24 hours
-    return 24 * 3600 * 1000;
+function getDbOptions(project, activityData = []) {
+    return {
+        tableName: project.tableName,
+        categories: Object.keys(project.channels || {}),
+        outputDir: project.outputDir,
+        activityData
+    };
 }
 
-async function runAnalysis() {
-    console.log(`\n🚀 Starting Scheduled Analysis at ${new Date().toISOString()}`);
+async function ensureDatabaseReady(project, options = {}) {
+    const dbOptions = getDbOptions(project);
+    const result = await ensureProjectTable({
+        ...dbOptions,
+        forceSchemaSync: options.forceSchemaSync || false
+    });
 
-    // 0. Test Database Connection FIRST
-    const isDbConnected = await testConnection();
-    if (!isDbConnected) {
-        console.error('🛑 ABORTING ANALYSIS: Database connection is not available.');
-        console.error('   Please check your .env file and Supabase project status.');
-        return; // Stop execution here
+    if (!result.success) {
+        console.error(`Database table "${project.tableName}" is not ready.`);
+        console.error(`Generated SQL: ${result.schemaPath}`);
+        if (result.error) console.error(`Reason: ${result.error}`);
+        return false;
     }
 
-    const startTime = Date.now();
+    return testConnection(dbOptions);
+}
 
-    const analytics = new MemberAnalytics(CHANNEL_CATEGORIES);
+function enrichActivityData(activityData, existingMap, project, dayOfWeek) {
+    const categories = Object.keys(project.channels || {});
+    const features = project.features || {};
 
-    try {
-        await analytics.initialize();
+    return activityData.map(member => {
+        const existing = existingMap.get(member.userId);
+        const updates = { ...member };
 
-        // 1. Fetch all members and text channels
-        const members = await analytics.getAllMembers();
+        for (const category of categories) {
+            const column = normalizeIdentifier(category, 'activity');
+            updates[column] = member.activity?.[category] || 0;
+        }
 
-        // 2. Refresh channel lists based on category
-        // NOTE: This assumes CHANNEL_CATEGORIES contains IDs or names
-        // Ideally we resolve them to actual IDs if they aren't already
+        updates.total_messages = member.totalMessages || 0;
 
-        // 3. Analyze Activity
-        const activityData = await analytics.analyzeActivity(CHANNEL_CATEGORIES, Infinity);
+        if (!updates.xUsername && existing && existing.x_username) {
+            updates.xUsername = existing.x_username;
+        }
 
-        // 4. Apply Day-Specific Logic (Thursday/Friday)
-        // Check current day in UTC
-        const now = new Date();
-        const dayOfWeek = now.getUTCDay(); // 0=Sun, 1=Mon, ..., 4=Thu, 5=Fri
+        if (features.regionRole) {
+            const region = getRegionalRole(member.roles);
+            if (region) updates.region = region;
+        }
 
-        // Fetch existing data to compare (e.g. for Friday comparison)
-        const existingDBMembers = await getMembersFromSupabase();
-        const existingMap = new Map(existingDBMembers.map(m => [m.user_id, m]));
-
-        console.log(`\n📅 Today is UTC Day: ${dayOfWeek} (0=Sun, 4=Thu, 5=Fri)`);
-
-        // Enrich activity data with snapshot logic
-        const enrichedData = activityData.map(member => {
+        if (features.magnitudePromotion) {
             const highestMag = getHighestMagnitude(member.roles);
-            const region = getRegionalRole(member.roles); // Detect regional role
-            const existing = existingMap.get(member.userId);
 
-            // ---------------------------------------------------------
-            // FULL SCAN LOGIC (NO ACCUMULATION)
-            // ---------------------------------------------------------
-            // We use the scraper result as the absolute truth for this run.
-
-            // Map to DB columns (snake_case)
-            member.tweet = member.activity.tweet || 0;
-            member.art = member.activity.art || 0;
-            // Note: analytics.js uses totalMessages (camel), DB uses total_messages (snake)
-            member.total_messages = member.totalMessages || 0;
-
-            // Preserve X Username if missing in scan but exists in DB
-            if (!member.xUsername && existing && existing.x_username) {
-                member.xUsername = existing.x_username;
-            }
-
-            const updates = { ...member };
-
-            // Always update region if detected
-            if (region) {
-                updates.region = region;
-            }
-
-            if (dayOfWeek === 4) { // THURSDAY
-                console.log(`   📸 Snapshotting Thursday Role for ${member.username}: ${highestMag}`);
+            if (dayOfWeek === 4) {
+                console.log(`   Snapshotting Thursday role for ${member.username}: ${highestMag}`);
                 updates.roleKamis = highestMag;
-                // RESET promotion status for new week
                 updates.isPromoted = false;
             }
-            // ELSE: Do NOTHING. Leave updates.roleKamis undefined. 
-            // supabase.js will ignore undefined fields, so the DB column is UNTOUCHED.
 
-            if (dayOfWeek === 5) { // FRIDAY
-                console.log(`   📸 Snapshotting Friday Role for ${member.username}: ${highestMag}`);
+            if (dayOfWeek === 5) {
+                console.log(`   Snapshotting Friday role for ${member.username}: ${highestMag}`);
                 updates.roleJumat = highestMag;
 
-                // Compare Logic
-                // We need the PREVIOUS Thursday's role. 
-                // Checks if we have it in DB (from existingMap)
                 const prevKamis = existing ? existing.role_kamis : null;
-
                 if (prevKamis !== null && highestMag !== null) {
-                    if (highestMag > prevKamis) {
-                        console.log(`   🎉 PROMOTION DETECTED: ${member.username} (${prevKamis} -> ${highestMag})`);
-                        updates.isPromoted = true;
-                    } else {
-                        updates.isPromoted = false;
+                    updates.isPromoted = highestMag > prevKamis;
+                    if (updates.isPromoted) {
+                        console.log(`   PROMOTION DETECTED: ${member.username} (${prevKamis} -> ${highestMag})`);
                     }
                 }
             }
-            // ELSE: Do NOTHING. Leave roleJumat & isPromoted undefined.
-            // DB columns remain strictly untouched.
-
-            return updates;
-        });
-
-        // 5. Save to Local Files (Backup)
-        await analytics.saveResults(enrichedData);
-
-        // 6. Save to Supabase
-        await saveToSupabase(enrichedData);
-
-        // 7. Data Integrity Check (Check for NULL Snapshots)
-        // Only run this check if today is Thursday or Friday to verify the snapshot worked
-        if (dayOfWeek === 4 || dayOfWeek === 5) {
-            console.log('\n🔍 Running Data Integrity Check...');
-            await checkMissingSnapshots();
         }
 
-        // 8. Final Sanitize (Fix False Promotions)
-        // Ensure consistency: role_kamis == role_jumat => is_promoted = FALSE
-        await sanitizePromotions();
+        return updates;
+    });
+}
+
+function getTimezoneOffsetHours(schedule = {}) {
+    if (Number.isFinite(schedule.timezoneOffsetHours)) {
+        return schedule.timezoneOffsetHours;
+    }
+
+    if ((schedule.timezone || '').toUpperCase() === 'UTC') {
+        return 0;
+    }
+
+    return 7;
+}
+
+function getTimeUntilNextRun(projects) {
+    const now = Date.now();
+
+    return Math.min(...projects.map(project => {
+        const schedule = project.schedule || {};
+        const offsetMs = getTimezoneOffsetHours(schedule) * 3600 * 1000;
+
+        for (let i = 0; i <= 7; i++) {
+            const evalTimeMs = now + (i * 24 * 3600 * 1000) + offsetMs;
+            const evalDate = new Date(evalTimeMs);
+            const year = evalDate.getUTCFullYear();
+            const month = evalDate.getUTCMonth();
+            const date = evalDate.getUTCDate();
+            const day = evalDate.getUTCDay();
+            const targetHour = day === 5
+                ? (schedule.fridayHour ?? schedule.defaultHour ?? 7)
+                : (schedule.defaultHour ?? 7);
+            const targetMs = Date.UTC(year, month, date, targetHour - getTimezoneOffsetHours(schedule), 0, 0, 0);
+
+            if (targetMs > now) {
+                return targetMs - now;
+            }
+        }
+
+        return 24 * 3600 * 1000;
+    }));
+}
+
+async function runAnalysis(project, overrideDay = null) {
+    console.log(`\nStarting analysis for project "${project.key}" at ${new Date().toISOString()}`);
+    console.log(`   Server ID: ${project.serverId}`);
+    console.log(`   Table: ${project.tableName}`);
+    console.log(`   Channels: ${Object.keys(project.channels || {}).join(', ')}`);
+
+    if (overrideDay !== null) {
+        const dayLabel = overrideDay === 4 ? 'KAMIS' : overrideDay === 5 ? 'JUMAT' : 'BIASA';
+        console.log(`   Manual day override: ${dayLabel}`);
+    }
+
+    const dbReady = await ensureDatabaseReady(project);
+    if (!dbReady) {
+        console.error(`Aborting project "${project.key}" because database is not ready.`);
+        return;
+    }
+
+    const startTime = Date.now();
+    const analytics = new MemberAnalytics(project.channels, {
+        projectKey: project.key,
+        serverId: project.serverId,
+        outputDir: project.outputDir,
+        stateDir: project.stateDir
+    });
+
+    try {
+        await analytics.initialize();
+        await analytics.getAllMembers();
+
+        console.log('\nStarting activity analysis (incremental + checkpoint mode)...');
+        const activityData = await analytics.analyzeActivity(project.channels, project.messageLimit);
+        const dayOfWeek = overrideDay !== null ? overrideDay : new Date().getUTCDay();
+
+        const dbOptions = getDbOptions(project, activityData);
+        const existingDBMembers = await getMembersFromSupabase(dbOptions);
+        const existingMap = new Map(existingDBMembers.map(member => [member.user_id, member]));
+
+        console.log(`\nToday is UTC day: ${dayOfWeek} (0=Sun, 4=Thu, 5=Fri)`);
+        const enrichedData = enrichActivityData(activityData, existingMap, project, dayOfWeek);
+
+        await analytics.saveResults(enrichedData);
+        await saveToSupabase(enrichedData, dbOptions);
+
+        if (project.features?.magnitudePromotion && (dayOfWeek === 4 || dayOfWeek === 5)) {
+            console.log('\nRunning data integrity check...');
+            await checkMissingSnapshots(dbOptions);
+        }
+
+        if (project.features?.sanitizePromotions) {
+            await sanitizePromotions(dbOptions);
+        }
 
         const duration = Date.now() - startTime;
         const minutes = Math.floor(duration / 60000);
         const seconds = ((duration % 60000) / 1000).toFixed(0);
 
-        console.log(`\n✅ Analysis Cycle Complete`);
-        console.log(`⏱️ Duration: ${minutes}m ${seconds}s`);
-
+        console.log(`\nAnalysis cycle complete for "${project.key}"`);
+        console.log(`Duration: ${minutes}m ${seconds}s`);
     } catch (error) {
-        console.error('❌ Analysis failed with error:', error);
+        console.error(`Analysis failed for project "${project.key}":`, error);
     } finally {
         await analytics.close();
     }
 }
 
-// --- Main Loop ---
-async function startLoop() {
-    console.log('🤖 Discord Scraper Automation Bot Started');
-    console.log('   Running in scheduled mode (Daily at 07:00 WIB, Fridays at 17:00 WIB)');
+function parseArgs() {
+    const rawArgs = process.argv.slice(2);
+    const args = {
+        projectKey: null,
+        all: false,
+        initDb: false,
+        list: false,
+        once: false,
+        overrideDay: null
+    };
 
-    // Run immediately on start 
-    // (Jika tidak ingin langsung jalan saat di-start, baris ini bisa di-comment)
-    await runAnalysis();
+    for (let i = 0; i < rawArgs.length; i++) {
+        const arg = rawArgs[i];
+        const normalized = arg.toLowerCase();
 
-    scheduleNext();
+        if (normalized === '--all') args.all = true;
+        if (normalized === '--init-db') args.initDb = true;
+        if (normalized === '--list') args.list = true;
+        if (normalized === '--once') args.once = true;
+        if (normalized === '--kamis' || normalized === 'kamis') args.overrideDay = 4;
+        if (normalized === '--jumat' || normalized === 'jumat') args.overrideDay = 5;
+        if (normalized === '--biasa' || normalized === 'biasa') args.overrideDay = 0;
+
+        if (normalized === '--project' || normalized === '-p') {
+            args.projectKey = rawArgs[i + 1];
+            i++;
+        } else if (normalized.startsWith('--project=')) {
+            args.projectKey = arg.slice('--project='.length);
+        }
+    }
+
+    if (args.overrideDay !== null) {
+        args.once = true;
+    }
+
+    return args;
 }
 
-const scheduleNext = () => {
-    const msUntilNext = getTimeUntilNextRun();
-    const nextDate = new Date(Date.now() + msUntilNext);
+function selectProjects(args) {
+    const config = loadProjectConfig();
+    if (args.all) return config.projects;
+    return [getProject(args.projectKey || config.defaultProject)];
+}
 
-    // Format WIB string for display (UTC+7)
+async function runProjectsOnce(projects, overrideDay = null) {
+    for (const project of projects) {
+        await runAnalysis(project, overrideDay);
+    }
+}
+
+async function initDatabases(projects) {
+    for (const project of projects) {
+        console.log(`\nInitializing database for project "${project.key}" (${project.tableName})...`);
+        const result = await ensureProjectTable({
+            ...getDbOptions(project),
+            forceSchemaSync: true
+        });
+
+        if (result.success) {
+            console.log(`Database ready for "${project.key}". SQL file: ${result.schemaPath}`);
+        } else {
+            console.error(`Database still needs manual SQL for "${project.key}". SQL file: ${result.schemaPath}`);
+            if (result.error) console.error(`Reason: ${result.error}`);
+        }
+    }
+}
+
+async function startLoop(projects) {
+    console.log('Discord scraper automation started');
+    console.log(`Projects: ${projects.map(project => project.key).join(', ')}`);
+
+    await runProjectsOnce(projects);
+    scheduleNext(projects);
+}
+
+function scheduleNext(projects) {
+    const msUntilNext = getTimeUntilNextRun(projects);
+    const nextDate = new Date(Date.now() + msUntilNext);
     const wibDate = new Date(nextDate.getTime() + 7 * 3600 * 1000);
     const wibStr = wibDate.toISOString().replace('T', ' ').substring(0, 16) + ' WIB';
 
-    console.log(`\n💤 Sleeping for ${(msUntilNext / 1000 / 3600).toFixed(2)} hours`);
-    console.log(`⏰ Next run scheduled for: ${nextDate.toUTCString()} (${wibStr})`);
+    console.log(`\nSleeping for ${(msUntilNext / 1000 / 3600).toFixed(2)} hours`);
+    console.log(`Next run scheduled for: ${nextDate.toUTCString()} (${wibStr})`);
 
     setTimeout(async () => {
-        await runAnalysis();
-        scheduleNext(); // Schedule the next one after completion
+        await runProjectsOnce(projects);
+        scheduleNext(projects);
     }, msUntilNext);
-};
+}
 
-// Start the loop
-startLoop();
+async function main() {
+    const args = parseArgs();
+
+    if (args.list) {
+        loadProjectConfig().projects.forEach(project => {
+            console.log(`${project.key}: server=${project.serverId}, table=${project.tableName}`);
+        });
+        return;
+    }
+
+    const projects = selectProjects(args);
+
+    if (args.initDb) {
+        await initDatabases(projects);
+        return;
+    }
+
+    if (args.once) {
+        await runProjectsOnce(projects, args.overrideDay);
+        return;
+    }
+
+    await startLoop(projects);
+}
+
+main().catch(error => {
+    console.error('Fatal error:', error);
+    process.exit(1);
+});

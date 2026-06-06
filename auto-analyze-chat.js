@@ -128,19 +128,15 @@ async function runChatAnalysis() {
         await analytics.getAllMembers();
 
         // =========================================================
-        console.log('\n🚀 PROCEEDING TO FULL SCAN (Limit: Infinity)...');
-        console.log('   (Counters will be reset and recalculated from scratch)');
-
-        // Run full analysis
+        // INCREMENTAL SCAN (uses checkpoint system)
+        // Only fetches new messages since last checkpoint,
+        // merges with saved data in {channelId}_checkpoint.json
         // =========================================================
-        // FULL SCAN (Limit: Infinity)
-        // =========================================================
-        console.log('\n🚀 PROCEEDING TO FULL SCAN (Limit: Infinity)...');
+        console.log('\n📊 Starting activity analysis (Incremental + Checkpoint mode)...');
 
-        // Run full analysis
         const activityData = await analytics.analyzeActivity(CHAT_CHANNEL_CATEGORIES, Infinity);
 
-        console.log(`\n📊 Chat Analysis Results (Full Scan):`);
+        console.log(`\n📊 Chat Analysis Results:`);
         console.log(`   Total active chatters: ${activityData.length}`);
 
         // Count per category
